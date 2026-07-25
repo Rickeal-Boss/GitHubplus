@@ -93,6 +93,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 ## 5. 运行
 
 1. **以管理员身份**运行解压目录里的 `FastGithub.UI.exe`（WinDivert 内核驱动需提权；首次会安装驱动，随进程卸载）。
+   - UI（`FastGithub.UI.exe`）基于 **.NET Framework 4.5（WPF）**，Windows 10/11 自带、无需另行安装 .NET 7；第三方依赖 LiveCharts / Newtonsoft.Json 已作为**内嵌资源**打进 exe（运行时由 `AppDomain.AssemblyResolve` 从资源流加载），包内无需额外 dll 文件。
 2. 程序自动把本机 443 流量经 WinDivert 引入本地代理；**不修改系统代理设置**。
 3. **信任本地 CA**：FastGithub 为每台机器生成自签 CA，存于 `cacert/` 文件夹。浏览器/系统需信任该根证书才能访问 https（按程序提示或手动导入「受信任根证书颁发机构」）。
    - ?? 私钥仅在本地，请勿外泄。
