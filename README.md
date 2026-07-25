@@ -152,13 +152,34 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 ---
 
-## 9. 许可证
+## 9. 如何确认加速正常运行（验证清单）
+
+构建并运行后，按以下顺序确认：
+
+**GitHub 主站（核心）**
+- 浏览器开 `https://github.com`：能正常打开、图片/API 加载正常（不再卡顿或超时）。
+- 命令行测速：`git clone` 任意仓库，对比开启加速前后的耗时。
+- 实时统计：浏览器开 `http://localhost:38457/flowStatistics`，查看 GitHub 相关域名的命中与流量。
+- 若 `github.com` 仍超时：多为本地 CA 未信任（见第 5 节第 3 步）或管理员权限不足（WinDivert 驱动未加载）。
+
+**HuggingFace（镜像重定向）**
+- 浏览器开 `https://huggingface.co`：地址栏仍是 huggingface.co，但内容由 `hf-mirror.com` 提供（DevTools → Network 可见请求落到镜像域名）。
+- 模型/数据集下载速度显著提升即说明重定向生效。
+- 注意：`hf-mirror.com` 是**上游镜像、本身不被拦截加速**；我们加速的是 `huggingface.co`，靠重定向借道镜像提速。
+
+**不影响其他流量（关键）**
+- 同时开着游戏 / 视频 / 其它网站，网络照常——不匹配的域名不被 WinDivert 拦截。
+- 若其它软件也变慢/断流：说明 WinDivert 过滤表达式或驱动异常，需排查（正常情况不应发生）。
+
+---
+
+## 10. 许可证
 
 FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyone/FastGithub` 仓库当前 LICENSE 条款**；本目录配置文件按相同许可随附。
 
 ---
 
-## 10. 一句话总结
+## 11. 一句话总结
 
 > 自建 = `git clone` FastGithub + 把 `appsettings.huggingface.json`（及原生 `appsettings.github.json`）放进 `FastGithub/appsettings/` + 运行 `build-portable.cmd` 出 Trimmed 自包含免安装包。
 > 加速内核、MITM、本地 CA、DNS 优选、WinDivert 拦截**全部复用**，真正需要写的"代码"就那一个 JSON 文件。
