@@ -139,7 +139,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 - **不影响其他流量**：WinDivert 按域名作用域拦截，不匹配包直接放行，且不改系统代理；代理进程崩溃只丢加速站点，不影响其它软件。
 - **本地 CA 根证书**：程序为每台机器生成自签 CA 并需被信任，意味着本机具备对该 CA 覆盖域名的 MITM 能力。仅本地使用、私钥不外泄则安全。不要使用来路不明的远程配置。
-- **内核驱动**：WinDivert 为内核态驱动，需管理员提权；仅在运行时加载，停止即卸载。
+- **内核驱动**：WinDivert 为内核态驱动，需管理员提权；仅在运行时加载，停止即卸载。（驱动二进制随 WindivertDotnet **内嵌于发布包**，zip 内看不到 `.sys` 属正常，首次运行由库自动解压安装——与官方 `fastgithub-win-x64.zip` 结构一致）
 - **无系统代理冲突**：因不改系统代理，可与 Steam++/Watt Toolkit 等并存（但没必要同时开同类工具）。
 
 ---
