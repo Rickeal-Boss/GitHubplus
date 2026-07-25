@@ -41,14 +41,16 @@ if not exist "%PKG%\dnscrypt-proxy" mkdir "%PKG%\dnscrypt-proxy"
 copy /Y "%SRC%\@dnscrypt-proxy\win-x64\dnscrypt-proxy.exe" "%PKG%\dnscrypt-proxy\" || echo [警告] dnscrypt-proxy.exe 未复制，DNS 防污染将降级（仍可加速）
 copy /Y "%SRC%\@dnscrypt-proxy\dnscrypt-proxy.toml"        "%PKG%\dnscrypt-proxy\" || echo [警告] dnscrypt-proxy.toml 未复制
 
-echo [5b]  防御：确保 WinDivert 原生驱动在 exe 同级（单文件下可能只在 runtimes/）
+echo [5b]  WinDivert 驱动：单文件发布时 WinDivert64.sys/WinDivert.dll 已由 WindivertDotnet 内嵌进 fastgithub.exe，
+echo       运行时自动解压安装内核驱动；zip 内看不到 .sys 属正常。以下仅作非单文件场景的兼容兜底。
 if not exist "%PKG%\WinDivert64.sys" (
   if exist "%PKG%\runtimes\win-x64\native\WinDivert64.sys" (
     copy /Y "%PKG%\runtimes\win-x64\native\WinDivert64.sys" "%PKG%\"
     copy /Y "%PKG%\runtimes\win-x64\native\WinDivert.dll"  "%PKG%\"
+  ) else (
+    echo [信息] 单文件发布：WinDivert 驱动已内嵌于 fastgithub.exe，首次运行由 WinDivertDotnet 自动安装（无需单独文件）
   )
 )
-if not exist "%PKG%\WinDivert64.sys" echo [警告] 未找到 WinDivert64.sys，请检查 WindivertDotnet 包
 
 echo [6/6] 打包为 zip（免安装包）
 powershell -NoProfile -Command "Compress-Archive -Path '%PKG%\*' -DestinationPath '%DIST%\FastGithub-Portable-win-x64.zip' -Force"
