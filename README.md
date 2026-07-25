@@ -179,7 +179,16 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyone/FastGithub` 
 
 ---
 
-## 11. 一句话总结
+## 11. GitHub Actions 自动构建（CI）
+
+仓库已配置 `.github/workflows/build.yml`：推送 `main` 即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip` 并作为构件（artifact）上传；推送形如 `v1.0.0` 的 tag 会额外创建 GitHub Release 并附上该 zip。
+
+- **取构件**：仓库 **Actions** 页 → 对应运行 → **Artifacts** → `FastGithub-Portable-win-x64`。
+- **取 Release**：仓库 **Releases** 页（需打 tag）。
+- **手动触发**：Actions 页 → 选工作流 → **Run workflow**。
+- **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 7 SDK，无需本机装环境；CI 只构建、不加载 WinDivert 驱动（无需管理员）。
+
+## 12. 一句话总结
 
 > 自建 = `git clone` FastGithub + 把 `appsettings.huggingface.json`（及原生 `appsettings.github.json`）放进 `FastGithub/appsettings/` + 运行 `build-portable.cmd` 出 Trimmed 自包含免安装包。
 > 加速内核、MITM、本地 CA、DNS 优选、WinDivert 拦截**全部复用**，真正需要写的"代码"就那一个 JSON 文件。
