@@ -1,19 +1,22 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
-cd /d "%~dp0"
+
+:: 脚本基准目录（无论从哪里调用，路径都基于脚本自身位置，避免依赖当前工作目录）
+set "SCRIPT_DIR=%~dp0"
 
 :: ============================================================
 :: 构建 Windows 免安装包（self-contained 单文件，解压即跑）
 :: 前置：安装 .NET 7 SDK  https://dotnet.microsoft.com/download
-:: 用法：把本文件与 appsettings.*.json 放在同一目录，双击运行
+:: 用法：把本文件与 appsettings.*.json、src-patches/ 放在同一目录，双击运行
 :: 产物：dist\FastGithub-Portable-win-x64.zip
 :: ============================================================
 
 set "REPO=https://github.com/creazyboyone/FastGithub.git"
-set "SRC=src"
-set "DIST=dist"
+set "SRC=%SCRIPT_DIR%src"
+set "DIST=%SCRIPT_DIR%dist"
 set "PKG=%DIST%\fastgithub_win-x64"
+set "PATCHES=%SCRIPT_DIR%src-patches"
 
 echo [前置] 检测 .NET 7 SDK
 where dotnet >nul 2>&1 || (echo [错误] 未检测到 dotnet，请先安装 .NET 7 SDK（https://dotnet.microsoft.com/download） & goto :fail)
@@ -24,23 +27,35 @@ echo [1/6] 清理并准备目录
 if exist "%DIST%" rd /S /Q "%DIST%"
 mkdir "%PKG%"
 
-echo [2/6] 克隆仓库（@dnscrypt-proxy 是普通目录，非子模块）
+echo [2/6] 克隆仓库（@dnscrypt-proxy 是普通目录，非子模块；失败自动重试）
+if exist "%SRC%" rd /S /Q "%SRC%"
+set "CLONE_TRY=0"
+:clone_retry
 git clone --depth 1 "%REPO%" "%SRC%"
-if errorlevel 1 goto :fail
+if errorlevel 1 (
+    set /a CLONE_TRY+=1
+    if exist "%SRC%" rd /S /Q "%SRC%"
+    if !CLONE_TRY! LSS 3 (
+        echo   [警告] 克隆失败，3 秒后重试（!CLONE_TRY!/3）…
+        ping -n 4 127.0.0.1 >nul
+        goto clone_retry
+    )
+    echo [错误] 克隆仓库失败，请检查网络后重试。
+    goto :fail
+)
 
 echo [2b/6] 改写"检测更新"跳转链接 -> 我们的仓库（Rickeal-Boss/GitHubplus）
 powershell -NoProfile -Command "$p='%SRC%\FastGithub.UI\MainWindow.xaml.cs'; $c=Get-Content -Raw $p; $c=$c.Replace('https://github.com/creazyboyone/FastGithub','https://github.com/Rickeal-Boss/GitHubplus'); $c | Set-Content $p -Encoding utf8; if ($c -notmatch 'Rickeal-Boss/GitHubplus') { Write-Error '检测更新链接未替换成功'; exit 1 }"
 if errorlevel 1 goto :fail
 
 echo [2c/6] 注入 UI 增强（加速控制页 + 进程启停控制 + 主窗体新增“加速”标签）
-set "PATCHES=%~dp0src-patches"
 copy /Y "%PATCHES%\Program.cs" "%SRC%\FastGithub.UI\Program.cs" || goto :fail
 copy /Y "%PATCHES%\MainWindow.xaml" "%SRC%\FastGithub.UI\MainWindow.xaml" || goto :fail
 copy /Y "%PATCHES%\AcceleratorPanel.xaml" "%SRC%\FastGithub.UI\AcceleratorPanel.xaml" || goto :fail
 copy /Y "%PATCHES%\AcceleratorPanel.xaml.cs" "%SRC%\FastGithub.UI\AcceleratorPanel.xaml.cs" || goto :fail
 
 echo [3/6] 注入加速配置（仅新增 HuggingFace 镜像；GitHub 主站配置为仓库原生，不覆盖）
-copy /Y "appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
+copy /Y "%SCRIPT_DIR%appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
 
 echo [4/6] 发布（官方两步法：先 UI，再核心单文件，输出到同一目录）
 dotnet publish -c Release -o "%PKG%" "%SRC%\FastGithub.UI\FastGithub.UI.csproj"
