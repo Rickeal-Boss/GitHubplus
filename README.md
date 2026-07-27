@@ -182,12 +182,14 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyone/FastGithub` 
 
 ## 11. GitHub Actions 自动构建（CI）
 
-仓库已配置 `.github/workflows/build.yml`：推送 `main` 即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip` 并作为构件（artifact）上传；推送形如 `v1.0.0` 的 tag 会额外创建 GitHub Release 并附上该 zip。
+仓库已配置 `.github/workflows/build.yml`：推送 `main`（或 tag、或手动）即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip`。
 
-- **取构件**：仓库 **Actions** 页 → 对应运行 → **Artifacts** → `FastGithub-Portable-win-x64`。
-- **取 Release**：仓库 **Releases** 页（需打 tag）。
+- **每次推送 `main` 构建成功都会同步发布 Release**：以 `ci-<运行号>` 为标签自动建版并附上 zip（Releases 页始终有最新构建）。
+- **打 `v*` tag**（如 `v1.0.0`）则发布对应版本号 Release。
+- 构建时自动把托盘右键"检测更新"跳转链接改写为本仓库 `Rickeal-Boss/GitHubplus`（`build-portable.cmd` 的 `[2b]` 步 patch `FastGithub.UI/MainWindow.xaml.cs` 的 `RELEASES_URI`）。
+- **取构件 / Release**：仓库 **Actions** 页 → 对应运行 → **Artifacts**；或 **Releases** 页直接下载。
 - **手动触发**：Actions 页 → 选工作流 → **Run workflow**。
-- **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 7 SDK，无需本机装环境；CI 只构建、不加载 WinDivert 驱动（无需管理员）。
+- **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 7 SDK；CI 只构建、不加载 WinDivert 驱动（无需管理员）。
 
 ## 12. 一句话总结
 
