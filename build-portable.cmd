@@ -27,6 +27,10 @@ echo [2/6] 克隆仓库（@dnscrypt-proxy 是普通目录，非子模块）
 git clone --depth 1 "%REPO%" "%SRC%"
 if errorlevel 1 goto :fail
 
+echo [2b/6] 改写"检测更新"跳转链接 -> 我们的仓库（Rickeal-Boss/GitHubplus）
+powershell -NoProfile -Command "$p='%SRC%\FastGithub.UI\MainWindow.xaml.cs'; $c=Get-Content -Raw $p; $c=$c.Replace('https://github.com/creazyboyone/FastGithub','https://github.com/Rickeal-Boss/GitHubplus'); $c | Set-Content $p -Encoding utf8; if ($c -notmatch 'Rickeal-Boss/GitHubplus') { Write-Error '检测更新链接未替换成功'; exit 1 }"
+if errorlevel 1 goto :fail
+
 echo [3/6] 注入加速配置（仅新增 HuggingFace 镜像；GitHub 主站配置为仓库原生，不覆盖）
 copy /Y "appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
 
