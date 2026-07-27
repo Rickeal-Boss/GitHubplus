@@ -16,7 +16,7 @@ set "REPO=https://github.com/creazyboyone/FastGithub.git"
 set "SRC=%SCRIPT_DIR%src"
 set "DIST=%SCRIPT_DIR%dist"
 set "PKG=%DIST%\fastgithub_win-x64"
-set "PATCHES=%SCRIPT_DIR%src-patches"
+set "PATCHES=%SCRIPT_DIR%src-patches\FastGithub.UI"
 
 echo [前置] 检测 .NET 7 SDK
 where dotnet >nul 2>&1 || (echo [错误] 未检测到 dotnet，请先安装 .NET 7 SDK（https://dotnet.microsoft.com/download） & goto :fail)
