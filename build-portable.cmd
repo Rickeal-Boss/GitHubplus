@@ -31,13 +31,13 @@ echo [2/6] 克隆仓库（@dnscrypt-proxy 是普通目录，非子模块；失�
 if exist "%SRC%" rd /S /Q "%SRC%"
 set "CLONE_TRY=0"
 :clone_retry
-git clone --depth 1 "%REPO%" "%SRC%"
+git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 clone --depth 1 --filter=blob:none "%REPO%" "%SRC%"
 if errorlevel 1 (
     set /a CLONE_TRY+=1
     if exist "%SRC%" rd /S /Q "%SRC%"
-    if !CLONE_TRY! LSS 3 (
-        echo   [警告] 克隆失败，3 秒后重试（!CLONE_TRY!/3）…
-        ping -n 4 127.0.0.1 >nul
+    if !CLONE_TRY! LSS 5 (
+        echo   [警告] 克隆失败，5 秒后重试（!CLONE_TRY!/5）…
+        ping -n 6 127.0.0.1 >nul
         goto clone_retry
     )
     echo [错误] 克隆仓库失败，请检查网络后重试。
