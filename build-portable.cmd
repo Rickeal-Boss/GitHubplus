@@ -28,21 +28,23 @@ if exist "%DIST%" rd /S /Q "%DIST%"
 mkdir "%PKG%"
 
 echo [2/6] 克隆仓库（@dnscrypt-proxy 是普通目录，非子模块；失败自动重试）
-if exist "%SRC%" rd /S /Q "%SRC%"
 set "CLONE_TRY=0"
 :clone_retry
-git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 clone --depth 1 --filter=blob:none "%REPO%" "%SRC%"
-if errorlevel 1 (
-    set /a CLONE_TRY+=1
-    if exist "%SRC%" rd /S /Q "%SRC%"
-    if !CLONE_TRY! LSS 5 (
-        echo   [警告] 克隆失败，5 秒后重试（!CLONE_TRY!/5）…
-        ping -n 6 127.0.0.1 >nul
-        goto clone_retry
-    )
-    echo [错误] 克隆仓库失败，请检查网络后重试。
-    goto :fail
+if exist "%SRC%" rd /S /Q "%SRC%"
+:: git-for-Windows 在 checkout 完成后偶发“The system cannot find the path specified”并以 exit 1 退出，
+:: 但文件实际已就位；故不以 exit code 判生死，而以关键工程文件是否存在判成功。
+git -c http.version=HTTP/1.1 -c http.postBuffer=524288000 clone --depth 1 --filter=blob:none "%REPO%" "%SRC%" 2>nul
+if exist "%SRC%\FastGithub.UI\FastGithub.UI.csproj" if exist "%SRC%\FastGithub\FastGithub.csproj" goto clone_done
+set /a CLONE_TRY+=1
+if !CLONE_TRY! LSS 5 (
+    echo   [警告] 克隆校验失败，5 秒后重试（!CLONE_TRY!/5）…
+    ping -n 6 127.0.0.1 >nul
+    goto clone_retry
 )
+echo [错误] 克隆仓库失败，请检查网络后重试。
+goto :fail
+:clone_done
+echo   [OK] 仓库已就绪（%SRC%）
 
 echo [2b/6] 改写"检测更新"跳转链接 -> 我们的仓库（Rickeal-Boss/GitHubplus）
 powershell -NoProfile -Command "$p='%SRC%\FastGithub.UI\MainWindow.xaml.cs'; $c=Get-Content -Raw $p; $c=$c.Replace('https://github.com/creazyboyone/FastGithub','https://github.com/Rickeal-Boss/GitHubplus'); $c | Set-Content $p -Encoding utf8; if ($c -notmatch 'Rickeal-Boss/GitHubplus') { Write-Error '检测更新链接未替换成功'; exit 1 }"
