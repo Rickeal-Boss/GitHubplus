@@ -15,6 +15,9 @@
 | 不影响其他流量 | WinDivert 包层按域名作用域拦截，不匹配走 `next()` | FastGithub 原生 |
 | 单文件 / 轻量 / 免安装 | .NET self-contained 发布（Trimmed 单文件） | FastGithub 原生 |
 | GreasyFork | 不加入任何配置 | —— 已剔除 |
+| 启动/停止加速开关 | UI「加速」页一键启停 `fastgithub.exe` 子进程 | **`src-patches/` 补丁（本工具新增）** |
+| 勾选要加速的网址 | UI 复选框启用/停用 `appsettings/*.json` 片段（Watt Toolkit 风格） | **`src-patches/` 补丁（本工具新增）** |
+| HuggingFace 镜像?主站直连 | UI 开关切换 `hf-mirror.com` 镜像 / 主站直连（beta） | **`src-patches/` 补丁（本工具新增）** |
 
 ---
 
@@ -48,6 +51,7 @@
 | `appsettings.github.json` | GitHub 主站域名配置（核心） | **保留**（FastGithub 原生，本目录仅作参考副本） |
 | `appsettings.huggingface.json` | HuggingFace 镜像重定向配置 | **新增**（本工具核心改动） |
 | `build-portable.cmd` | Windows 免安装包一键构建脚本 | **新增** |
+| `src-patches/FastGithub.UI/` | UI 增强补丁：`Program.cs`（进程启停）、`MainWindow.xaml`（新增「加速」标签）、`AcceleratorPanel.xaml(.cs)`（加速控制面板） | **新增**（构建时覆盖进克隆源码，不改 FastGithub 核心） |
 
 > 把 `appsettings.*.json` 放进 FastGithub 仓库的 `FastGithub/appsettings/` 目录即可（与 `appsettings.github.json` 同级）。
 
@@ -68,11 +72,13 @@ build-portable.cmd
 脚本自动完成：
 1. **前置检测** `.NET 7 SDK`（`where dotnet`）；缺失则直接报错退出。
 2. `git clone --depth 1` FastGithub（含 `@dnscrypt-proxy` 目录，**非子模块**，无需 `--recurse-submodules`）。
-3. **仅注入新增的 `appsettings.huggingface.json`** 到 `FastGithub/appsettings/`。GitHub 主站配置为仓库原生 `appsettings.github.json`，**不覆盖**（避免上游更新后被旧副本回退）。
-4. 两步发布（先 UI 再核心单文件，`--self-contained` + `PublishTrimmed` + `PublishSingleFile`）→ 自带运行时、免安装。
-4. **修正 dnscrypt-proxy 目录命名**：代码 `DnscryptProxy.cs` 期望 `dnscrypt-proxy/`，但仓库目录是 `@dnscrypt-proxy/`，脚本把 `win-x64/dnscrypt-proxy.exe` + `dnscrypt-proxy.toml` 拷成 `dnscrypt-proxy/`，否则 DNS 防污染会静默失效（降级到 FallbackDns，仍可加速）。
-5. **防御 WinDivert 原生库**：单文件下 `WinDivert64.sys`/`WinDivert.dll` 可能只在 `runtimes/win-x64/native/`，脚本将其补到 exe 同级（驱动必须挨着 `WinDivert.dll` 才能加载）。
-6. `Compress-Archive` 打包成 zip。
+3. **改写托盘「检测更新」链接**为本仓库 `Rickeal-Boss/GitHubplus`（`MainWindow.xaml.cs` 的 `RELEASES_URI`）。
+4. **注入 UI 增强补丁**：把 `src-patches/FastGithub.UI/` 下的 `Program.cs`、`MainWindow.xaml`、`AcceleratorPanel.xaml(.cs)` 覆盖进 `FastGithub.UI/`，新增「加速」标签页与加速控制面板（启停开关 + 网址勾选 + HF 模式切换）。**不改 FastGithub 核心代码**。
+5. **仅注入新增的 `appsettings.huggingface.json`** 到 `FastGithub/appsettings/`。GitHub 主站配置为仓库原生 `appsettings.github.json`，**不覆盖**（避免上游更新后被旧副本回退）。
+6. 两步发布（先 UI 再核心单文件，`--self-contained` + `PublishTrimmed` + `PublishSingleFile`）→ 自带运行时、免安装。
+7. **修正 dnscrypt-proxy 目录命名**：代码期望 `dnscrypt-proxy/`，但仓库目录是 `@dnscrypt-proxy/`，脚本把 `win-x64/dnscrypt-proxy.exe` + `dnscrypt-proxy.toml` 拷成 `dnscrypt-proxy/`，否则 DNS 防污染会静默失效（降级到 FallbackDns，仍可加速）。
+8. **防御 WinDivert 原生库**：单文件下 `WinDivert64.sys`/`WinDivert.dll` 可能只在 `runtimes/win-x64/native/`，脚本将其补到 exe 同级（驱动必须挨着 `WinDivert.dll` 才能加载）。
+9. 创建 `appsettings/disabled/` 目录（停用站点片段存放处，引擎不扫描该子目录）并 `Compress-Archive` 打包成 zip。
 
 > 产物：`dist/FastGithub-Portable-win-x64.zip`。解压后目录含 `FastGithub.UI.exe`（界面启动器）、`fastgithub.exe`（核心）、`appsettings/`、`dnscrypt-proxy/`、`WinDivert64.sys` 等。
 
@@ -101,6 +107,18 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
    - 浏览器开 `https://github.com` 正常且快。
    - 浏览器开 `https://huggingface.co` → 实际经 `hf-mirror.com` 镜像返回，速度提升。
    - 同时开其他软件（游戏/视频/其它网站）网络照常 —— 不匹配的域名不被拦截。
+
+### 加速控制面板（UI 新页面）
+
+主界面新增「**加速**」标签页，提供图形化控制（无需手改配置、无需命令行）：
+
+- **启动 / 停止加速**：一键启停底层 `fastgithub.exe` 引擎进程。停止后流量恢复直连（WinDivert 拦截随进程退出解除），UI 与托盘常驻。
+- **加速网址清单（Watt Toolkit 风格）**：列出所有可加速站点（GitHub、HuggingFace、Google、Microsoft、AWS、Fastly、Imgur、BootCDN、Packages、V2EX），勾选即启用、取消即停用。实现方式：把对应 `appsettings.<站点>.json` 片段在 `appsettings/`（启用）与 `appsettings/disabled/`（停用）间移动，并自动重启引擎生效。
+- **HuggingFace 加速模式**（需先勾选 HuggingFace）：
+  - **镜像加速**（默认）：`huggingface.co` 重定向到 `hf-mirror.com`，速度最优、最稳。
+  - **主站直连（beta）**：去掉镜像、复用 GitHub 的「免发送 SNI + 忽略证书不匹配」机制直连 `huggingface.co` 主站。属 beta 特性，部分网络/证书场景可能不稳定，遇问题切回镜像即可。
+
+> 所有改动即时写入 `appsettings/` 目录并重启引擎；关闭软件时引擎随之退出。下次启动按文件现状恢复（勾选状态持久化在片段所在位置中）。
 
 ---
 
@@ -186,7 +204,7 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyone/FastGithub` 
 
 - **每次推送 `main` 构建成功都会同步发布 Release**：以 `ci-<运行号>` 为标签自动建版并附上 zip（Releases 页始终有最新构建）。
 - **打 `v*` tag**（如 `v1.0.0`）则发布对应版本号 Release。
-- 构建时自动把托盘右键"检测更新"跳转链接改写为本仓库 `Rickeal-Boss/GitHubplus`（`build-portable.cmd` 的 `[2b]` 步 patch `FastGithub.UI/MainWindow.xaml.cs` 的 `RELEASES_URI`）。
+- 构建时自动把托盘右键"检测更新"跳转链接改写为本仓库 `Rickeal-Boss/GitHubplus`（`build-portable.cmd` 的 `[2b]` 步 patch `FastGithub.UI/MainWindow.xaml.cs` 的 `RELEASES_URI`）；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 覆盖进克隆源码，新增「加速」标签页与加速控制面板）。
 - **取构件 / Release**：仓库 **Actions** 页 → 对应运行 → **Artifacts**；或 **Releases** 页直接下载。
 - **手动触发**：Actions 页 → 选工作流 → **Run workflow**。
 - **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 7 SDK；CI 只构建、不加载 WinDivert 驱动（无需管理员）。

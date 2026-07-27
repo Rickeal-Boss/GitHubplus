@@ -1,6 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
+cd /d "%~dp0"
 
 :: ============================================================
 :: 构建 Windows 免安装包（self-contained 单文件，解压即跑）
@@ -31,6 +32,13 @@ echo [2b/6] 改写"检测更新"跳转链接 -> 我们的仓库（Rickeal-Boss/G
 powershell -NoProfile -Command "$p='%SRC%\FastGithub.UI\MainWindow.xaml.cs'; $c=Get-Content -Raw $p; $c=$c.Replace('https://github.com/creazyboyone/FastGithub','https://github.com/Rickeal-Boss/GitHubplus'); $c | Set-Content $p -Encoding utf8; if ($c -notmatch 'Rickeal-Boss/GitHubplus') { Write-Error '检测更新链接未替换成功'; exit 1 }"
 if errorlevel 1 goto :fail
 
+echo [2c/6] 注入 UI 增强（加速控制页 + 进程启停控制 + 主窗体新增“加速”标签）
+set "PATCHES=%~dp0src-patches"
+copy /Y "%PATCHES%\Program.cs" "%SRC%\FastGithub.UI\Program.cs" || goto :fail
+copy /Y "%PATCHES%\MainWindow.xaml" "%SRC%\FastGithub.UI\MainWindow.xaml" || goto :fail
+copy /Y "%PATCHES%\AcceleratorPanel.xaml" "%SRC%\FastGithub.UI\AcceleratorPanel.xaml" || goto :fail
+copy /Y "%PATCHES%\AcceleratorPanel.xaml.cs" "%SRC%\FastGithub.UI\AcceleratorPanel.xaml.cs" || goto :fail
+
 echo [3/6] 注入加速配置（仅新增 HuggingFace 镜像；GitHub 主站配置为仓库原生，不覆盖）
 copy /Y "appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
 
@@ -55,6 +63,9 @@ if not exist "%PKG%\WinDivert64.sys" (
     echo [信息] 单文件发布：WinDivert 驱动已内嵌于 fastgithub.exe，首次运行由 WinDivertDotnet 自动安装（无需单独文件）
   )
 )
+
+echo [5c] 创建 appsettings/disabled 目录（停用站点片段存放处，引擎不扫描该子目录）
+if not exist "%PKG%\appsettings\disabled" mkdir "%PKG%\appsettings\disabled"
 
 echo [6/6] 打包为 zip（免安装包）
 powershell -NoProfile -Command "Compress-Archive -Path '%PKG%\*' -DestinationPath '%DIST%\FastGithub-Portable-win-x64.zip' -Force"
