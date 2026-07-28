@@ -19,6 +19,14 @@ namespace FastGithub.UI
         /// </summary>
         internal static Process? EngineProcess { get; private set; }
 
+        /// <summary>
+        /// 锚点进程：fastgithub 把它当成“父进程”监听其退出以走优雅停机路径。
+        /// UI 自身不退出时，我们杀掉此锚点即可触发 fastgithub 的
+        /// WaitForParentProcessExitAsync -> host.StopAsync()，从而清理 dnscrypt-proxy
+        /// 等子进程（避免硬杀 fastgithub 直接遗弃孤儿进程）。
+        /// </summary>
+        private static Process? _anchorProcess;
+
         [STAThread]
         static void Main(string[] args)
         {
@@ -35,6 +43,7 @@ namespace FastGithub.UI
 
             var app = new Application();
             app.StartupUri = new Uri(MAIN_WINDOWS, UriKind.Relative);
+            app.Exit += (s, e) => DetachEngineOnExit();   // UI 退出时让 fastgithub 自行优雅停机
             app.Run();
         }
 
@@ -107,10 +116,16 @@ namespace FastGithub.UI
                 return;
             }
 
+            // 拉起锚点进程，作为 fastgithub 名义上的“父进程”
+            EnsureAnchor();
+            var parentPid = (_anchorProcess != null && _anchorProcess.HasExited == false)
+                ? _anchorProcess.Id
+                : Process.GetCurrentProcess().Id;   // 锚点不可用时回退为 UI 自身（行为等价旧版）
+
             var startInfo = new ProcessStartInfo
             {
                 FileName = FASTGITHUB_PATH,
-                Arguments = $"ParentProcessId={Process.GetCurrentProcess().Id} UdpLoggerPort={UdpLogger.Port}",
+                Arguments = $"ParentProcessId={parentPid} UdpLoggerPort={UdpLogger.Port}",
                 UseShellExecute = false,
                 CreateNoWindow = true
             };
@@ -118,37 +133,95 @@ namespace FastGithub.UI
         }
 
         /// <summary>
-        /// 停止加速引擎
+        /// 停止加速引擎。
+        /// 默认走优雅停机：杀掉锚点进程，使 fastgithub 检测到“父进程退出”后自行
+        /// host.StopAsync()（清理 dnscrypt-proxy 等子进程）；超时未退则兜底强杀。
         /// </summary>
-        internal static void StopEngine()
+        internal static void StopEngine(bool graceful = true)
         {
             if (EngineProcess == null)
             {
+                TryDisposeAnchor();
                 return;
             }
 
-            try
+            if (graceful)
             {
-                if (EngineProcess.HasExited == false)
+                // 触发 fastgithub 的 WaitForParentProcessExitAsync -> host.StopAsync()
+                TryKillAnchor();
+                try
                 {
-                    EngineProcess.Kill();
+                    if (EngineProcess.HasExited == false && EngineProcess.WaitForExit(5000) == false)
+                    {
+                        EngineProcess.Kill();   // 超时兜底：强杀
+                    }
+                }
+                catch
+                {
+                    try { EngineProcess.Kill(); } catch { }
                 }
             }
-            catch
+            else
             {
-                // 进程可能已退出，忽略
+                try { if (EngineProcess.HasExited == false) EngineProcess.Kill(); } catch { }
             }
 
+            try { EngineProcess.Dispose(); } catch { }
+            EngineProcess = null;
+            TryDisposeAnchor();
+        }
+
+        /// <summary>
+        /// UI 退出时调用：杀掉锚点即可让 fastgithub 自行优雅停机（清理 dnscrypt），
+        /// 不等待、不强杀，让 fastgithub 在后台完成收尾后退出。
+        /// </summary>
+        internal static void DetachEngineOnExit()
+        {
+            TryKillAnchor();
+            TryDisposeAnchor();
+            try { EngineProcess?.Dispose(); } catch { }
+            EngineProcess = null;
+        }
+
+        /// <summary>
+        /// 拉起锚点进程（timeout.exe 长期挂起，被杀即视为“父进程退出”）。
+        /// 失败时留空，由调用方回退为 UI 自身 PID。
+        /// </summary>
+        private static void EnsureAnchor()
+        {
+            if (_anchorProcess != null && _anchorProcess.HasExited == false)
+            {
+                return;
+            }
             try
             {
-                EngineProcess.Dispose();
+                _anchorProcess = Process.Start(new ProcessStartInfo
+                {
+                    FileName = "timeout.exe",
+                    Arguments = "/t 999999 /nobreak",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden
+                });
             }
             catch
             {
-                // 忽略
+                _anchorProcess = null;
             }
+        }
 
-            EngineProcess = null;
+        private static void TryKillAnchor()
+        {
+            if (_anchorProcess == null) return;
+            try { if (_anchorProcess.HasExited == false) _anchorProcess.Kill(); } catch { }
+        }
+
+        private static void TryDisposeAnchor()
+        {
+            if (_anchorProcess == null) return;
+            try { if (_anchorProcess.HasExited == false) _anchorProcess.Kill(); } catch { }
+            try { _anchorProcess.Dispose(); } catch { }
+            _anchorProcess = null;
         }
     }
 }

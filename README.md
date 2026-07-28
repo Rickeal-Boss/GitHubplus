@@ -17,7 +17,7 @@
 | GreasyFork | 不加入任何配置 | —— 已剔除 |
 | 启动/停止加速开关 | UI「加速」页一键启停 `fastgithub.exe` 子进程 | **`src-patches/` 补丁（本工具新增）** |
 | 勾选要加速的网址 | UI 复选框启用/停用 `appsettings/*.json` 片段（Watt Toolkit 风格） | **`src-patches/` 补丁（本工具新增）** |
-| HuggingFace 镜像?主站直连 | UI 开关切换 `hf-mirror.com` 镜像 / 主站直连（beta） | **`src-patches/` 补丁（本工具新增）** |
+| HuggingFace 镜像加速 | UI 单一镜像模式（`hf-mirror.com`），已去除主站直连 beta | **`src-patches/` 补丁（本工具新增）** |
 
 ---
 
@@ -112,11 +112,9 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 主界面新增「**加速**」标签页，提供图形化控制（无需手改配置、无需命令行）：
 
-- **启动 / 停止加速**：一键启停底层 `fastgithub.exe` 引擎进程。停止后流量恢复直连（WinDivert 拦截随进程退出解除），UI 与托盘常驻。
+- **启动 / 停止加速**：一键启停底层 `fastgithub.exe` 引擎进程。停止后流量恢复直连（WinDivert 拦截随进程退出解除），UI 与托盘常驻。停止采用**优雅停机**：通过锚点进程触发 fastgithub 走 `host.StopAsync()` 路径清理 `dnscrypt-proxy` 子进程，避免硬杀导致的孤儿进程残留；若 5s 内未自行退出则兜底强杀。
 - **加速网址清单（Watt Toolkit 风格）**：列出所有可加速站点（GitHub、HuggingFace、Google、Microsoft、AWS、Fastly、Imgur、BootCDN、Packages、V2EX），勾选即启用、取消即停用。实现方式：把对应 `appsettings.<站点>.json` 片段在 `appsettings/`（启用）与 `appsettings/disabled/`（停用）间移动，并自动重启引擎生效。
-- **HuggingFace 加速模式**（需先勾选 HuggingFace）：
-  - **镜像加速**（默认）：`huggingface.co` 重定向到 `hf-mirror.com`，速度最优、最稳。
-  - **主站直连（beta）**：去掉镜像、复用 GitHub 的「免发送 SNI + 忽略证书不匹配」机制直连 `huggingface.co` 主站。属 beta 特性，部分网络/证书场景可能不稳定，遇问题切回镜像即可。
+- **HuggingFace 加速（镜像模式）**：`huggingface.co` 重定向到 `hf-mirror.com`，速度最优、最稳。无需切换，勾选即启用镜像（**已去除不稳定的主站直连 beta**）。
 
 > 所有改动即时写入 `appsettings/` 目录并重启引擎；关闭软件时引擎随之退出。下次启动按文件现状恢复（勾选状态持久化在片段所在位置中）。
 

@@ -1,15 +1,14 @@
-using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 
 namespace FastGithub.UI
 {
     /// <summary>
-    /// 加速控制面板：启停加速、勾选要加速的网址、切换 HuggingFace 镜像/主站直连（beta）。
+    /// 加速控制面板：启停加速、勾选要加速的网址、HuggingFace 镜像加速（已去除主站直连 beta）。
     /// 实现不修改 FastGithub 核心代码，仅通过对 appsettings/*.json 片段的启用/停用
     /// 与 fastgithub.exe 子进程的启停来控制加速行为。
     /// </summary>
@@ -18,8 +17,6 @@ namespace FastGithub.UI
         private static readonly string AppDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         private static readonly string AppSettingsDir = Path.Combine(AppDir, "appsettings");
         private static readonly string DisabledDir = Path.Combine(AppSettingsDir, "disabled");
-
-        private bool _suppressEvents;
 
         private static readonly Dictionary<string, string> FriendlyNames = new Dictionary<string, string>
         {
@@ -35,18 +32,7 @@ namespace FastGithub.UI
             { "v2ex", "V2EX" }
         };
 
-        // HuggingFace 主站直连（beta）：去掉 Destination，复用 GitHub 的「免发送 SNI + 忽略证书不匹配」机制
-        private const string DirectHuggingFaceJson = @"{
-  ""FastGithub"": {
-    ""DomainConfigs"": {
-      ""huggingface.co"": { ""TlsSni"": false, ""TlsIgnoreNameMismatch"": true },
-      ""hf.co"": { ""TlsSni"": false, ""TlsIgnoreNameMismatch"": true },
-      ""*.huggingface.co"": { ""TlsSni"": false, ""TlsIgnoreNameMismatch"": true }
-    }
-  }
-}";
-
-        // HuggingFace 镜像加速（默认）：转发到 hf-mirror.com
+        // HuggingFace 镜像加速（唯一模式）：转发到 hf-mirror.com
         private const string MirrorHuggingFaceJson = @"{
   ""FastGithub"": {
     ""DomainConfigs"": {
@@ -67,7 +53,7 @@ namespace FastGithub.UI
         {
             RefreshStatus();
             RefreshSites();
-            RefreshHfMode();
+            EnsureHfMirror();
         }
 
         #region 启停
@@ -79,18 +65,22 @@ namespace FastGithub.UI
             ToggleButton.Content = running ? "停止加速" : "启动加速";
         }
 
-        private void ToggleButton_Click(object sender, RoutedEventArgs e)
+        private async void ToggleButton_Click(object sender, RoutedEventArgs e)
         {
-            if (Program.IsEngineRunning)
+            ToggleButton.IsEnabled = false;
+            try
             {
-                Program.StopEngine();
+                if (Program.IsEngineRunning)
+                    await Task.Run(() => Program.StopEngine());   // 优雅停机（内部等待并兜底强杀）
+                else
+                    Program.StartEngine();
+                await Task.Delay(300);
+                RefreshStatus();
             }
-            else
+            finally
             {
-                Program.StartEngine();
+                ToggleButton.IsEnabled = true;
             }
-            Thread.Sleep(300);
-            RefreshStatus();
         }
 
         #endregion
@@ -133,10 +123,10 @@ namespace FastGithub.UI
                 SitesPanel.Children.Add(cb);
             }
 
-            UpdateHfAvailability();
+            UpdateHfHint();
         }
 
-        private void Site_Toggled(object sender, RoutedEventArgs e)
+        private async void Site_Toggled(object sender, RoutedEventArgs e)
         {
             var cb = (CheckBox)sender;
             var key = (string)cb.Tag;
@@ -144,14 +134,15 @@ namespace FastGithub.UI
             if (cb.IsChecked == true)
             {
                 EnableFragment(key);
+                if (key == "huggingface") WriteHuggingFace();   // 确保 HF 为镜像（清理旧版直连片段）
             }
             else
             {
                 DisableFragment(key);
             }
 
-            UpdateHfAvailability();
-            ApplyAndRestart();
+            UpdateHfHint();
+            await ApplyAndRestart();
         }
 
         private void EnableFragment(string key)
@@ -188,82 +179,39 @@ namespace FastGithub.UI
 
         #endregion
 
-        #region HuggingFace 模式
+        #region HuggingFace 镜像
 
-        private void UpdateHfAvailability()
+        // 确保 HF 片段为镜像模式（清理旧版可能遗留的「主站直连」片段）
+        private void EnsureHfMirror()
+        {
+            var frag = Path.Combine(AppSettingsDir, FragmentName("huggingface"));
+            if (File.Exists(frag) == false) return;
+            try { File.WriteAllText(frag, MirrorHuggingFaceJson); } catch { }
+        }
+
+        private void WriteHuggingFace()
+        {
+            var frag = Path.Combine(AppSettingsDir, FragmentName("huggingface"));
+            if (File.Exists(frag) == false) return;
+            try { File.WriteAllText(frag, MirrorHuggingFaceJson); } catch { }
+        }
+
+        private void UpdateHfHint()
         {
             var hfOn = SiteEnabled("huggingface");
-            HfMirrorRadio.IsEnabled = hfOn;
-            HfDirectRadio.IsEnabled = hfOn;
             HfHint.Text = hfOn
-                ? "启用 HuggingFace 后可选；切换后自动重启加速以生效。"
-                : "先勾选 HuggingFace 才能选择加速模式。";
-        }
-
-        private void RefreshHfMode()
-        {
-            var frag = Path.Combine(AppSettingsDir, FragmentName("huggingface"));
-            if (File.Exists(frag) == false)
-            {
-                return;
-            }
-
-            var isDirect = false;
-            try
-            {
-                var txt = File.ReadAllText(frag);
-                var jo = JObject.Parse(txt);
-                var dc = jo["FastGithub"]?["DomainConfigs"]?["huggingface.co"] as JObject;
-                isDirect = dc == null || dc["Destination"] == null;
-            }
-            catch
-            {
-                // 解析失败时保持默认
-            }
-
-            // 程序化赋值会触发 Checked 事件，用标志抑制，避免加载期误重写/重启
-            _suppressEvents = true;
-            HfMirrorRadio.IsChecked = !isDirect;
-            HfDirectRadio.IsChecked = isDirect;
-            _suppressEvents = false;
-        }
-
-        private void HfMode_Changed(object sender, RoutedEventArgs e)
-        {
-            if (_suppressEvents)
-            {
-                return;
-            }
-
-            if (HfMirrorRadio.IsChecked == true)
-            {
-                WriteHuggingFace(false);
-            }
-            else if (HfDirectRadio.IsChecked == true)
-            {
-                WriteHuggingFace(true);
-            }
-            ApplyAndRestart();
-        }
-
-        private void WriteHuggingFace(bool direct)
-        {
-            var frag = Path.Combine(AppSettingsDir, FragmentName("huggingface"));
-            if (File.Exists(frag) == false)
-            {
-                return;
-            }
-            File.WriteAllText(frag, direct ? DirectHuggingFaceJson : MirrorHuggingFaceJson);
+                ? "HuggingFace 采用镜像加速（hf-mirror.com，稳定推荐）；修改勾选后自动重启加速以生效。"
+                : "先勾选 HuggingFace 以启用镜像加速。";
         }
 
         #endregion
 
-        private void ApplyAndRestart()
+        private async Task ApplyAndRestart()
         {
             if (Program.IsEngineRunning)
             {
-                Program.StopEngine();
-                Thread.Sleep(800);
+                await Task.Run(() => Program.StopEngine());   // 优雅停机（内部等待并兜底强杀）
+                await Task.Delay(200);
                 Program.StartEngine();
             }
             RefreshStatus();
