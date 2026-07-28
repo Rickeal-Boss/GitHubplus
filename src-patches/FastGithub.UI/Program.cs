@@ -251,7 +251,7 @@ namespace FastGithub.UI
             var anchor = _anchorProcess;
             if (anchor == null || anchor.HasExited)
             {
-                return Task.CompletedTask;
+                return Task.FromResult(true);
             }
 
             var tcs = new TaskCompletionSource<bool>();
@@ -263,7 +263,7 @@ namespace FastGithub.UI
 
             anchor.EnableRaisingEvents = true;
             anchor.Exited += OnExited;
-            return anchor.HasExited ? Task.CompletedTask : tcs.Task;
+            return anchor.HasExited ? Task.FromResult(true) : tcs.Task;
         }
 
         private static void TryKillAnchor()
