@@ -10,6 +10,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- 总开关 -->
@@ -51,5 +52,25 @@
         <TextBlock Grid.Row="3" x:Name="HintText"
                    Text="提示：修改网址勾选后会自动重启加速引擎以生效（需管理员权限）。"
                    FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+
+        <!-- 界面背景：手动导入图片作为 UI 背景；恢复默认即回到原始背景 -->
+        <Border Grid.Row="4" Background="White" CornerRadius="6" Padding="14" Margin="0 10 0 0">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="界面背景" FontSize="14" FontWeight="Bold"/>
+                    <TextBlock x:Name="BgPathText" Text="当前：默认背景" FontSize="11" Foreground="Gray"
+                               Margin="0 4 0 0" TextWrapping="Wrap"/>
+                </StackPanel>
+                <Button x:Name="ChooseBgButton" Content="选择图片…" Width="100" Height="32"
+                        Grid.Column="1" Margin="0 0 8 0" Click="ChooseBackground_Click"/>
+                <Button x:Name="ResetBgButton" Content="恢复默认" Width="90" Height="32"
+                        Grid.Column="2" Click="ResetBackground_Click"/>
+            </Grid>
+        </Border>
     </Grid>
 </UserControl>
