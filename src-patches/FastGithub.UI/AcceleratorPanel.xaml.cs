@@ -4,6 +4,8 @@ using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media.Imaging;
+using Microsoft.Win32;
 
 namespace FastGithub.UI
 {
@@ -17,6 +19,10 @@ namespace FastGithub.UI
         private static readonly string AppDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
         private static readonly string AppSettingsDir = Path.Combine(AppDir, "appsettings");
         private static readonly string DisabledDir = Path.Combine(AppSettingsDir, "disabled");
+
+        // 界面背景：导入的图片存于 ui-background/，路径持久化在 ui-background.txt；为空即默认背景
+        private static readonly string BackgroundDir = Path.Combine(AppDir, "ui-background");
+        private static readonly string BackgroundCfg = Path.Combine(AppDir, "ui-background.txt");
 
         private static readonly Dictionary<string, string> FriendlyNames = new Dictionary<string, string>
         {
@@ -54,6 +60,7 @@ namespace FastGithub.UI
             RefreshStatus();
             RefreshSites();
             EnsureHfMirror();
+            LoadBackground();
         }
 
         #region 启停
@@ -239,6 +246,110 @@ namespace FastGithub.UI
         private static string Friendly(string key)
         {
             return FriendlyNames.TryGetValue(key, out var v) ? v : key;
+        }
+
+        #endregion
+
+        #region 界面背景
+
+        private void ChooseBackground_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog
+            {
+                Title = "选择背景图片",
+                Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp|所有文件|*.*"
+            };
+            if (dlg.ShowDialog() != true) return;
+
+            try
+            {
+                if (Directory.Exists(BackgroundDir) == false)
+                {
+                    Directory.CreateDirectory(BackgroundDir);
+                }
+                var ext = Path.GetExtension(dlg.FileName);
+                if (string.IsNullOrEmpty(ext)) ext = ".png";
+                var dest = Path.Combine(BackgroundDir, "ui-background" + ext.ToLowerInvariant());
+                File.Copy(dlg.FileName, dest, overwrite: true);
+                File.WriteAllText(BackgroundCfg, dest);
+                ApplyBackground(dest);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("设置背景失败：" + ex.Message, "界面背景", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void ResetBackground_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (File.Exists(BackgroundCfg))
+                {
+                    var p = File.ReadAllText(BackgroundCfg).Trim();
+                    if (File.Exists(p)) File.Delete(p);
+                    File.Delete(BackgroundCfg);
+                }
+            }
+            catch { }
+            ClearBackground();
+        }
+
+        // 加载已保存的背景（若存在则应用，否则恢复默认）
+        private void LoadBackground()
+        {
+            try
+            {
+                if (File.Exists(BackgroundCfg))
+                {
+                    var p = File.ReadAllText(BackgroundCfg).Trim();
+                    if (File.Exists(p))
+                    {
+                        ApplyBackground(p);
+                        return;
+                    }
+                }
+            }
+            catch { }
+            ClearBackground();
+        }
+
+        private void ApplyBackground(string path)
+        {
+            var img = FindUiBackgroundImage();
+            if (img == null) return;
+            try
+            {
+                var bmp = new BitmapImage();
+                bmp.BeginInit();
+                bmp.UriSource = new Uri(path, UriKind.Absolute);
+                bmp.CacheOption = BitmapCacheOption.OnLoad;
+                bmp.EndInit();
+                img.Source = bmp;
+                img.Visibility = Visibility.Visible;
+                BgPathText.Text = "当前：自定义背景（" + Path.GetFileName(path) + "）";
+            }
+            catch
+            {
+                BgPathText.Text = "当前：默认背景（图片加载失败）";
+            }
+        }
+
+        private void ClearBackground()
+        {
+            var img = FindUiBackgroundImage();
+            if (img != null)
+            {
+                img.Source = null;
+                img.Visibility = Visibility.Collapsed;
+            }
+            BgPathText.Text = "当前：默认背景";
+        }
+
+        private System.Windows.Controls.Image FindUiBackgroundImage()
+        {
+            var win = Window.GetWindow(this);
+            return win?.FindName("UiBackgroundImage") as System.Windows.Controls.Image;
         }
 
         #endregion

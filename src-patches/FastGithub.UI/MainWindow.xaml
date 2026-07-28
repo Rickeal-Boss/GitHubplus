@@ -143,27 +143,30 @@
         </ResourceDictionary>
     </Window.Resources>
     <Grid Background="#00ffffff">
+        <!-- UI 背景图片：默认隐藏（Collapsed）。由“加速”选项卡的“界面背景”导入图片后显示，
+             恢复默认即隐藏，露出原始默认背景。置于最底层，各选项卡内容改为透明以便透出。 -->
+        <Image x:Name="UiBackgroundImage" Stretch="UniformToFill" Visibility="Collapsed"/>
         <TabControl Style="{StaticResource TabControlWithUnderLineStyle}" Foreground="Black" Background="Transparent" BorderBrush="Transparent" BorderThickness="0">
             <TabItem Style="{StaticResource TabItemExWithUnderLineStyle}" Header="流量" Height="40" Width="60"  Margin="5 0" FontSize="18">
-                <Grid Background="#f7f7f7">
+                <Grid Background="Transparent">
                     <local:FlowChart Margin="16" />
                 </Grid>
             </TabItem>
 
             <TabItem Style="{StaticResource TabItemExWithUnderLineStyle}" Header="日志" Height="40" Width="60" Margin="5 0" FontSize="18">
-                <Grid Background="#f7f7f7">
+                <Grid Background="Transparent">
                     <local:UdpLogListBox/>
                 </Grid>
             </TabItem>
 
             <TabItem Style="{StaticResource TabItemExWithUnderLineStyle}" Header="问答" Height="40" Width="60" Margin="5 0" FontSize="18">
-                <Grid Background="#f7f7f7">
+                <Grid Background="Transparent">
                     <local:IssuesWebbrowser/>
                 </Grid>
             </TabItem>
 
             <TabItem Style="{StaticResource TabItemExWithUnderLineStyle}" Header="加速" Height="40" Width="60" Margin="5 0" FontSize="18">
-                <Grid Background="#f7f7f7">
+                <Grid Background="Transparent">
                     <local:AcceleratorPanel/>
                 </Grid>
             </TabItem>
