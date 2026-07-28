@@ -112,7 +112,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 主界面新增「**加速**」标签页，提供图形化控制（无需手改配置、无需命令行）：
 
-- **启动 / 停止加速**：一键启停底层 `fastgithub.exe` 引擎进程。停止后流量恢复直连（WinDivert 拦截随进程退出解除），UI 与托盘常驻。停止采用**优雅停机**：通过锚点进程触发 fastgithub 走 `host.StopAsync()` 路径清理 `dnscrypt-proxy` 子进程，避免硬杀导致的孤儿进程残留；若 5s 内未自行退出则兜底强杀。
+- **启动 / 停止加速**：一键启停底层 `fastgithub.exe` 引擎进程。停止后流量恢复直连（WinDivert 拦截随进程退出解除），UI 与托盘常驻。停止采用**优雅停机**：UI 以 `ping -t 127.0.0.1` 锚点进程伪装成 fastgithub 的「父进程」，停止时杀掉锚点触发 fastgithub 走 `host.StopAsync()` 路径清理 `dnscrypt-proxy` 子进程，避免硬杀导致的孤儿进程残留；若 5s 内未自行退出则兜底强杀。（早期曾用 `timeout.exe` 作锚点，但在「GUI 子进程 + 无控制台」环境下会读 stdin 失败立即退出，误触发停机，已改为不读 stdin 的 `ping`。）
 - **加速网址清单（Watt Toolkit 风格）**：列出所有可加速站点（GitHub、HuggingFace、Google、Microsoft、AWS、Fastly、Imgur、BootCDN、Packages、V2EX），勾选即启用、取消即停用。实现方式：把对应 `appsettings.<站点>.json` 片段在 `appsettings/`（启用）与 `appsettings/disabled/`（停用）间移动，并自动重启引擎生效。
 - **HuggingFace 加速（镜像模式）**：`huggingface.co` 重定向到 `hf-mirror.com`，速度最优、最稳。无需切换，勾选即启用镜像（**已去除不稳定的主站直连 beta**）。
 
