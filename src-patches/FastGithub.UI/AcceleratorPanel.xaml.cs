@@ -346,7 +346,7 @@ namespace FastGithub.UI
             BgPathText.Text = "当前：默认背景";
         }
 
-        private System.Windows.Controls.Image FindUiBackgroundImage()
+        private System.Windows.Controls.Image? FindUiBackgroundImage()
         {
             var win = Window.GetWindow(this);
             return win?.FindName("UiBackgroundImage") as System.Windows.Controls.Image;
