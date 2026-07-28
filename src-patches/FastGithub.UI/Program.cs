@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 
 namespace FastGithub.UI
@@ -24,6 +25,8 @@ namespace FastGithub.UI
         /// UI 自身不退出时，我们杀掉此锚点即可触发 fastgithub 的
         /// WaitForParentProcessExitAsync -> host.StopAsync()，从而清理 dnscrypt-proxy
         /// 等子进程（避免硬杀 fastgithub 直接遗弃孤儿进程）。
+        /// 锚点选用 ping -t 127.0.0.1：它不读 stdin，在「GUI 子进程 + 无控制台」
+        /// 环境下不会像 timeout.exe 那样立即退出，可长期存活直到被我们杀掉。
         /// </summary>
         private static Process? _anchorProcess;
 
@@ -149,6 +152,8 @@ namespace FastGithub.UI
             {
                 // 触发 fastgithub 的 WaitForParentProcessExitAsync -> host.StopAsync()
                 TryKillAnchor();
+                // 确认锚点已真正退出（fastgithub 已收到“父进程退出”信号）再等引擎收尾
+                try { WaitForAnchorExit().Wait(2000); } catch { }
                 try
                 {
                     if (EngineProcess.HasExited == false && EngineProcess.WaitForExit(5000) == false)
@@ -184,8 +189,9 @@ namespace FastGithub.UI
         }
 
         /// <summary>
-        /// 拉起锚点进程（timeout.exe 长期挂起，被杀即视为“父进程退出”）。
-        /// 失败时留空，由调用方回退为 UI 自身 PID。
+        /// 拉起锚点进程（ping -t 127.0.0.1 长期存活，被杀即视为“父进程退出”）。
+        /// 先用「重定向输出」方式启动；若该方式失败，再退回「无重定向」方式兜底。
+        /// 两者都失败时留空，由调用方回退为 UI 自身 PID。
         /// </summary>
         private static void EnsureAnchor()
         {
@@ -195,19 +201,69 @@ namespace FastGithub.UI
             }
             try
             {
-                _anchorProcess = Process.Start(new ProcessStartInfo
-                {
-                    FileName = "timeout.exe",
-                    Arguments = "/t 999999 /nobreak",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                });
+                _anchorProcess = StartAnchor(redirect: true) ?? StartAnchor(redirect: false);
             }
             catch
             {
                 _anchorProcess = null;
             }
+        }
+
+        /// <summary>
+        /// 启动 ping 锚点进程。
+        /// ping -t 不读 stdin，在「GUI 子进程 + CreateNoWindow（无控制台）」环境下
+        /// 不会像 timeout.exe 那样读 stdin 失败后立刻退出，可长期存活。
+        /// redirect=true 时重定向标准输出/错误并后台读取丢弃，避免管道缓冲写满
+        /// 导致 ping 在 WriteFile 上阻塞（仍存活，但更干净）。
+        /// </summary>
+        private static Process? StartAnchor(bool redirect)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "ping",
+                Arguments = "-t 127.0.0.1",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            if (redirect)
+            {
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+            }
+
+            var p = Process.Start(psi);
+            if (p != null && redirect)
+            {
+                // 后台读取并丢弃输出，防止管道缓冲写满使 ping 卡死在写操作
+                _ = Task.Run(() => { try { p.StandardOutput.ReadToEnd(); } catch { } });
+                _ = Task.Run(() => { try { p.StandardError.ReadToEnd(); } catch { } });
+            }
+            return p;
+        }
+
+        /// <summary>
+        /// 返回在锚点进程退出时完成的 Task（基于 Process.Exited + TaskCompletionSource）。
+        /// 锚点已被杀或不存在时立即完成，可安全 await / Wait。
+        /// </summary>
+        private static Task WaitForAnchorExit()
+        {
+            var anchor = _anchorProcess;
+            if (anchor == null || anchor.HasExited)
+            {
+                return Task.CompletedTask;
+            }
+
+            var tcs = new TaskCompletionSource<bool>();
+            void OnExited(object? sender, EventArgs e)
+            {
+                anchor.Exited -= OnExited;
+                tcs.TrySetResult(true);
+            }
+
+            anchor.EnableRaisingEvents = true;
+            anchor.Exited += OnExited;
+            return anchor.HasExited ? Task.CompletedTask : tcs.Task;
         }
 
         private static void TryKillAnchor()
