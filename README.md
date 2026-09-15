@@ -203,6 +203,25 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 > ⚠ 清理完也**不要分发运行过的程序目录**：`cacert\fastgithub.key` 是本机生成的 CA 私钥（明文）。换机器请用官方 Release 的干净压缩包重新解压。
 
+### 7.2 已知残留与限制（上游行为，本工具未改动）
+
+以下几条属于「上游既有行为 + 本工具暂未修」，但会影响你对本机关联影响的判断，如实列出：
+
+| 项 | 说明 | 应对 |
+|---|---|---|
+| **hosts 文件被改写且不会自动恢复** | 引擎启动时会把命中加速域名的 hosts 行注释掉；上游的恢复逻辑是空实现，**停止加速后不会还原** | 若你原本自定义过 hosts，停止加速后请自行检查 `C:\Windows\System32\drivers\etc\hosts` |
+| **引擎可能残留后台运行** | 若 UI 被强杀或崩溃，`fastgithub.exe` 可能继续在后台拦截 443 并写日志，而托盘图标已消失、用户无感知 | 在任务管理器中结束 `fastgithub.exe`；或重新打开 UI 点「停止加速」 |
+| **覆盖式升级不收敛默认集** | 「默认只启用 GitHub 与 HuggingFace」只在**全新解压**时生效。若你在旧版本目录上直接覆盖解压，旧版已启用的站点片段仍留在 `appsettings/` 顶层继续生效 | 升级请用全新目录解压；或手动把不需要的 `appsettings.*.json` 移入 `appsettings/disabled/` |
+| **日志无容量上限** | `logs/log.txt` 按天滚动、不清理，记录访问过的**域名与路径**（不含 query） | `clean.cmd` 会一并删除 `logs/` |
+
+**私钥 ACL（可选自行加固）**：`cacert\fastgithub.key` 为明文，目录权限继承程序目录。若只想让当前用户与 SYSTEM 可读，可在程序目录执行：
+
+```bat
+icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
+```
+
+> 不打算把私钥迁到 `%ProgramData%`：该目录默认继承的 ACL 反而更松（Everyone 可读），且写入需管理员权限，与免安装定位冲突。
+
 ---
 
 ## 8. 品牌化（可选）
