@@ -31,6 +31,9 @@ namespace FastGithub.HttpServer.Certs
         private readonly ILogger<CertService> logger;
         private X509Certificate2? caCert;
 
+        // [PATCH] 保护 caCert 的首次初始化（单例 + 并发 TLS 握手）
+        private readonly object caCertLock = new object();
+
 
         /// <summary>
         /// 获取证书文件路径
@@ -106,7 +109,27 @@ namespace FastGithub.HttpServer.Certs
             try
             {
                 using var cert = new X509Certificate2(this.CaCerFilePath);
-                return cert.NotAfter > DateTime.Now.AddDays(30);
+
+                // 有效期：剩余不足 30 天即重新签发
+                if (cert.NotAfter <= DateTime.Now.AddDays(30))
+                {
+                    return false;
+                }
+
+                // 配对检查：证书与私钥必须是同一对。
+                // 若用户只替换了其中一个（手动导入公司 CA、旧包升级残留等），
+                // X509Certificate2.CopyWithPrivateKey 不会报错，真正的失败会延迟到
+                // 每次 TLS 握手签名时才抛 CryptographicException —— 表现为 HTTPS 全线不可用。
+                using var rsa = RSA.Create();
+                rsa.ImportFromPem(File.ReadAllText(this.CaKeyFilePath));
+                using var certPublicKey = cert.GetRSAPublicKey();
+                if (certPublicKey == null)
+                {
+                    return false;
+                }
+
+                return certPublicKey.ExportParameters(false).Modulus
+                    .SequenceEqual(rsa.ExportParameters(false).Modulus);
             }
             catch (Exception)
             {
@@ -138,9 +161,11 @@ namespace FastGithub.HttpServer.Certs
         }
 
         /// <summary>
-        /// [PATCH] 让 git 使用 Windows 系统证书存储，而不是关闭证书校验
+        /// [PATCH] 让 git 能正常校验证书，而不是关闭校验。
+        /// 首选切到 Schannel 读 Windows 证书存储；若用户已显式改用其它后端（如 openssl），
+        /// 则退一步把本机 CA 文件路径交给 git。无论如何都不再写 http.sslVerify=false。
         /// </summary>
-        private static void ConfigureGitToUseSystemCertStore()
+        private void ConfigureGitToUseSystemCertStore()
         {
             // 仅 Windows 有 Schannel 后端可切；其它平台沿用系统默认校验行为
             if (OperatingSystem.IsWindows() == false)
@@ -151,16 +176,39 @@ namespace FastGithub.HttpServer.Certs
             // 清理旧版本遗留的全局关闭配置（幂等：未设置时 git 返回非 0，忽略退出码即可）
             RunGitConfig("--unset http.sslVerify");
 
-            // 仅当用户从未显式配置过 sslBackend 时才切换，
-            // 避免每次勾选站点重启引擎都重刷用户的既有选择
             var sslBackend = RunGitConfigGet("http.sslBackend");
             if (string.IsNullOrEmpty(sslBackend))
             {
+                // 仅当用户从未显式配置过 sslBackend 时才切换，
+                // 避免每次勾选站点重启引擎都重刷用户的既有选择。
+                // 注：Git for Windows 的 http.schannelCheckRevoke 默认值已是 best-effort，
+                //     自签 CA 缺少 CRL 分发点也不会报错，因此无需额外设置。
                 RunGitConfig("http.sslBackend schannel");
+                return;
             }
 
-            // 注：Git for Windows 的 http.schannelCheckRevoke 默认值已是 best-effort，
-            //     自签 CA 缺少 CRL 分发点也不会报错，因此无需额外设置。
+            if (string.Equals(sslBackend, "schannel", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            // [PATCH] 回归防线：openssl 等后端不读 Windows 证书存储，而旧版依赖的
+            // http.sslVerify=false 已被移除 —— 若不处理，这类用户会直接 clone 失败。
+            // 用户未指定自己的 CA 包时才指向本机 CA；已指定则只告警，绝不覆盖其配置。
+            var sslCAInfo = RunGitConfigGet("http.sslCAInfo");
+            if (string.IsNullOrEmpty(sslCAInfo))
+            {
+                // git config 值里的反斜杠会被当作转义，统一换成正斜杠
+                var caPath = Path.GetFullPath(this.CaCerFilePath).Replace('\\', '/');
+                RunGitConfig($"http.sslCAInfo \"{caPath}\"");
+                return;
+            }
+
+            this.logger.LogWarning(
+                $"检测到 git 使用了 http.sslBackend={sslBackend} 且已配置 http.sslCAInfo，" +
+                "该组合不会读取 Windows 证书存储，git 可能不信任本机 CA 导致操作失败。" +
+                "可自行执行 git config --global --unset http.sslBackend 切换为 schannel，" +
+                $"或把 {this.CaCerFilePath} 追加到你现有的 CA 包中。");
         }
 
         /// <summary>
@@ -241,9 +289,18 @@ namespace FastGithub.HttpServer.Certs
         {
             if (this.caCert == null)
             {
-                using var rsa = RSA.Create();
-                rsa.ImportFromPem(File.ReadAllText(this.CaKeyFilePath));
-                this.caCert = new X509Certificate2(this.CaCerFilePath).CopyWithPrivateKey(rsa);
+                // [PATCH] CertService 是单例，而 TLS 握手是多线程并发的。
+                // 原实现无同步：并发首次握手会各建一份 X509Certificate2，多余的那份
+                // 被直接丢弃且未 Dispose（非托管证书句柄泄漏）。双检锁解决。
+                lock (this.caCertLock)
+                {
+                    if (this.caCert == null)
+                    {
+                        using var rsa = RSA.Create();
+                        rsa.ImportFromPem(File.ReadAllText(this.CaKeyFilePath));
+                        this.caCert = new X509Certificate2(this.CaCerFilePath).CopyWithPrivateKey(rsa);
+                    }
+                }
             }
 
             var key = $"{nameof(CertService)}:{domain}";

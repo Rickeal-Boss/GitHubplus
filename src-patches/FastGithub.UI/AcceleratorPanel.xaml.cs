@@ -55,6 +55,12 @@ namespace FastGithub.UI
   }
 }";
 
+        // 引擎启动失败的常见原因（用于把「启动后零校验」的静默失败变成可见提示）
+        private const string EngineStartFailureDetail =
+            "引擎未能启动，当前实际未处于加速状态。常见原因：" +
+            "fastgithub.exe 缺失或被安全软件拦截、38457 端口被占用、" +
+            "WinDivert 驱动未加载（需以管理员身份运行）。请排查后重试。";
+
         // 当前已知的站点 key 列表（启用目录 + 停用目录的并集），用于统计风险提示
         private readonly List<string> siteKeys = new List<string>();
 
@@ -88,8 +94,8 @@ namespace FastGithub.UI
             {
                 if (Program.IsEngineRunning)
                     await Task.Run(() => Program.StopEngine());   // 优雅停机（内部等待并兜底强杀）
-                else
-                    Program.StartEngine();
+                else if (Program.StartEngine() == false)
+                    ReportError("启动加速引擎", EngineStartFailureDetail);
                 await Task.Delay(300);
                 RefreshStatus();
             }
@@ -201,8 +207,12 @@ namespace FastGithub.UI
 
             if (success == false)
             {
-                // 文件移动/写入失败：回滚勾选状态，避免 UI 与实际不一致
+                // 文件移动/写入失败：回滚勾选状态，避免 UI 与实际不一致。
+                // 此时不必重启引擎——配置没变，重启只会造成无谓的断网。
                 SetCheckedSilently(cb, !turningOn);
+                UpdateRiskHint();
+                UpdateHfHint();
+                return;
             }
 
             UpdateRiskHint();
@@ -232,7 +242,14 @@ namespace FastGithub.UI
             // 片段本来就不在停用目录（例如上游默认启用），视为已启用
             if (File.Exists(src) == false)
             {
-                return File.Exists(dst);
+                if (File.Exists(dst))
+                {
+                    return true;
+                }
+                // 两个目录都没有该片段：直接返回 false 会让勾选被静默回滚，用户不知道为什么
+                ReportError("启用站点 " + Friendly(key),
+                    "未找到该站点的配置片段（appsettings\\ 与 appsettings\\disabled\\ 下都没有），无法启用。");
+                return false;
             }
 
             try
@@ -385,7 +402,12 @@ namespace FastGithub.UI
             {
                 await Task.Run(() => Program.StopEngine());   // 优雅停机（内部等待并兜底强杀）
                 await Task.Delay(200);
-                Program.StartEngine();
+                if (Program.StartEngine() == false)
+                {
+                    // [PATCH] 原实现启动后零校验：引擎起不来时 UI 只是静默从「运行中」变「已停止」，
+                    // 用户会误以为仍在加速。这里必须显式告知。
+                    ReportError("重启加速引擎", EngineStartFailureDetail);
+                }
             }
             RefreshStatus();
         }

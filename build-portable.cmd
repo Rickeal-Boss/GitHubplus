@@ -62,8 +62,12 @@ goto :fail
 :clone_done
 echo   [OK] 上游源码已就绪（%SRC%）@ %UPSTREAM_COMMIT%
 
-echo [2b/6] 改写"检测更新"跳转链接 -^> 我们的仓库（Rickeal-Boss/GitHubplus）
-powershell -NoProfile -Command "$p='%SRC%\FastGithub.UI\MainWindow.xaml.cs'; $c=Get-Content -Raw $p; $c=$c.Replace('https://github.com/creazyboyone/FastGithub','https://github.com/Rickeal-Boss/GitHubplus'); $c | Set-Content $p -Encoding utf8; if ($c -notmatch 'Rickeal-Boss/GitHubplus') { Write-Error '检测更新链接未替换成功'; exit 1 }"
+echo [2b/6] 注入主窗体补丁（检测更新链接指向本仓库 + 拆开最小化/关闭语义）
+:: 原实现用 PowerShell 对上游 MainWindow.xaml.cs 做字符串替换改链接，上游改格式就会失效；
+:: 改为整文件覆盖（与 AcceleratorPanel 同样的做法），并额外修掉「最小化等同关闭」的问题。
+if not exist "%PATCHES%\MainWindow.xaml.cs" (echo [错误] 缺少 src-patches\FastGithub.UI\MainWindow.xaml.cs & goto :fail)
+copy /Y "%PATCHES%\MainWindow.xaml.cs" "%SRC%\FastGithub.UI\MainWindow.xaml.cs" || goto :fail
+powershell -NoProfile -Command "$p='%SRC%\FastGithub.UI\MainWindow.xaml.cs'; if (-not (Select-String -Path $p -Pattern 'Rickeal-Boss/GitHubplus' -Quiet)) { Write-Error '主窗体补丁未生效：检测更新链接未指向本仓库'; exit 1 }"
 if errorlevel 1 goto :fail
 
 echo [2c/6] 注入 UI 增强（加速控制页 + 进程启停控制 + 主窗体新增“加速”标签）
@@ -137,9 +141,18 @@ copy /Y "%SCRIPT_DIR%clean.cmd" "%PKG%\"
 if errorlevel 1 (echo [错误] clean.cmd 未随包分发 & goto :fail)
 copy /Y "%SCRIPT_DIR%README.md" "%PKG%\README.md"
 if errorlevel 1 (echo [错误] README.md 未随包分发 & goto :fail)
+:: 包内还带有上游自带的 README.html，其中「本工具未在 github 之外渠道发布」等表述
+:: 与本仓库的分发事实冲突，保留会让用户读到互相矛盾的说明，直接删除。
+if exist "%PKG%\README.html" (
+    del /F /Q "%PKG%\README.html"
+    echo   [OK] 已移除包内上游 README.html（避免与本仓库说明冲突）
+)
 echo   [OK] clean.cmd + README.md 已随包
 
 echo [5d] 默认站点收敛（默认启用：%DEFAULT_SITES%；其余移入 appsettings\disabled\）
+:: 注意：这一步是安全关键。收敛失败意味着 packages / amazonaws 等高风险站点
+:: 会随包默认启用，因此失败必须硬失败，不能只打警告放行（原实现是 fail-open）。
+set "CONVERGE_FAIL=0"
 for %%f in ("%PKG%\appsettings\appsettings.*.json") do (
     set "FILE_NAME=%%~nxf"
     set "KEY=!FILE_NAME:appsettings.=!"
@@ -149,9 +162,29 @@ for %%f in ("%PKG%\appsettings\appsettings.*.json") do (
     if "!KEEP!"=="0" (
         echo   [5d] 默认停用：!KEY!
         move /Y "%%f" "%PKG%\appsettings\disabled\" >nul
-        if errorlevel 1 echo   [警告] !KEY! 停用失败，请检查文件是否被占用
+        if errorlevel 1 (
+            echo   [错误] 站点 !KEY! 停用失败（文件可能被占用）
+            set "CONVERGE_FAIL=1"
+        )
     )
 )
+if "!CONVERGE_FAIL!"=="1" (echo [错误] 默认站点收敛失败，高风险站点可能仍处于启用状态，终止构建 & goto :fail)
+
+echo [5d-verify] 复核 appsettings\ 顶层只应剩默认启用站点
+set "VERIFY_FAIL=0"
+for %%f in ("%PKG%\appsettings\appsettings.*.json") do (
+    set "VN=%%~nxf"
+    set "VK=!VN:appsettings.=!"
+    set "VK=!VK:.json=!"
+    set "VOK=0"
+    for %%s in (%DEFAULT_SITES%) do if /I "%%s"=="!VK!" set "VOK=1"
+    if "!VOK!"=="0" (
+        echo   [错误] 站点 !VK! 仍处于启用状态
+        set "VERIFY_FAIL=1"
+    )
+)
+if "!VERIFY_FAIL!"=="1" (echo [错误] 默认站点集合校验未通过，终止构建 & goto :fail)
+echo   [OK] 顶层启用站点与默认集合一致
 
 echo [5e] 防御：移除任何预置 cacert（CA 必须由用户首次运行时在本机生成）
 if exist "%PKG%\cacert" (

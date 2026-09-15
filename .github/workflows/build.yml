@@ -10,12 +10,19 @@ on:
 permissions:
   contents: write
 
+# 防止同一 ref 上并发运行，避免 Release 被反复 delete/create 产生竞态
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
+      # 所有 action 都 pin 到具体 commit SHA：@v4 这类可变 tag 可被上游改指向，
+      # 属于构建期供应链入口。升级时请同步更新 SHA 与注释里的版本号。
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # 默认会把具备 contents: write 的 token 写进 .git/config；
           # 而本工作流的构建过程会执行上游源码自带的 MSBuild 目标（dotnet publish），
@@ -23,7 +30,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup .NET 7 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '7.0.x'
 
@@ -60,6 +67,16 @@ jobs:
           fi
           echo "  已确认源码中不存在 GitConfigSslverify"
 
+          if [ ! -f "src/FastGithub.UI/MainWindow.xaml.cs" ]; then
+            echo "::error::主窗体补丁未生效：MainWindow.xaml.cs 不存在"
+            exit 1
+          fi
+          if grep -q "SC_MINIMIZE" "src/FastGithub.UI/MainWindow.xaml.cs"; then
+            echo "::error::主窗体补丁未生效：仍存在最小化/关闭不分的 SC_MINIMIZE 判断"
+            exit 1
+          fi
+          echo "  已确认主窗体补丁生效（最小化与关闭语义已拆开）"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1
@@ -77,24 +94,24 @@ jobs:
           echo "  已确认发布包中无预置 CA 目录"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: FastGithub-Portable-win-x64
           path: dist/FastGithub-Portable-win-x64.zip
           if-no-files-found: error
+          retention-days: 7
 
-      - name: Publish Release (每次构建成功同步发版)
+      # 只有推送 v* tag 才发版。原先每次 push main（包括纯文档提交）都会自动建 Release，
+      # 公开仓库里堆出一串同质版本，用户无法分辨哪个才是可信版本。
+      - name: Publish Release (仅 tag 触发)
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            TAG="${GITHUB_REF_NAME}"
-            TITLE="GitHub+HuggingFace 加速工具 ${TAG}"
-          else
-            TAG="ci-${GITHUB_RUN_NUMBER}"
-            TITLE="GitHub+HuggingFace 加速工具（自动构建 #${GITHUB_RUN_NUMBER}）"
-          fi
+          TAG="${GITHUB_REF_NAME}"
+          TITLE="GitHub+HuggingFace 加速工具 ${TAG}"
+
           # 产物 SHA256 写进 Release notes，用户下载后可自行校验
           SHA256="$(cat dist/SHA256.txt 2>/dev/null || echo '(未生成)')"
           NOTES="Windows 免安装包（自动构建）。

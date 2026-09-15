@@ -12,7 +12,7 @@
 |---|---|---|
 | GitHub 主站加速（核心） | `TlsSni:false` SNI 伪装 + IP 优选 | `appsettings.github.json`（FastGithub 原生，保留） |
 | HuggingFace 加速 | 镜像重定向 `Destination: https://hf-mirror.com` | **`appsettings.huggingface.json`（本工具新增）** |
-| 不影响其他流量（性能 / 拦截层面） | WinDivert 包层按域名作用域拦截，不匹配走 `next()`，且**不改系统代理** | FastGithub 原生 |
+| 不影响其他流量（性能 / 拦截层面） | WinDivert 包层按域名作用域拦截，不匹配走 `next()`；**不改系统代理开关与代理服务器，但会往代理绕过列表 `ProxyOverride` 追加加速域名**（见 7.3） | FastGithub 原生 |
 | 信任层面：勾选 = 授权解密 | 勾选清单即**实际被本地 CA 解密**的范围；而 CA 本身的签发能力覆盖**所有域名**。详见第 7 节 | 本工具如实说明（上游既有行为） |
 | 单文件 / 轻量 / 免安装 | .NET self-contained 发布（Trimmed 单文件） | FastGithub 原生 |
 | GreasyFork | 不加入任何配置 | —— 已剔除 |
@@ -26,7 +26,7 @@
 
 ```
 本机 443 流量
-   │  WinDivert 重定向（TcpInterceptor，不改系统代理）
+   │  WinDivert 重定向（TcpInterceptor，不改 ProxyEnable/ProxyServer）
    ▼
 本地 HTTPS 代理（用本地 CA 为真实域名签发证书）
    │  HttpReverseProxyMiddleware.TryGetDomainConfig
@@ -111,7 +111,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 1. **以管理员身份**运行解压目录里的 `FastGithub.UI.exe`（WinDivert 内核驱动需提权；首次会安装驱动，随进程卸载）。
    - UI（`FastGithub.UI.exe`）基于 **.NET Framework 4.5（WPF）**，Windows 10/11 自带、无需另行安装 .NET 7；第三方依赖 LiveCharts / Newtonsoft.Json 已作为**内嵌资源**打进 exe（运行时由 `AppDomain.AssemblyResolve` 从资源流加载），包内无需额外 dll 文件。
-2. 程序自动把本机 443 流量经 WinDivert 引入本地代理；**不修改系统代理设置**。
+2. 程序把加速域名的流量引入本地代理；**不修改系统代理开关（ProxyEnable）与代理服务器（ProxyServer）**，但会往系统代理绕过列表追加加速域名，详见 **7.3**。
 3. **信任本地 CA（请务必读完）**：FastGithub 为每台机器生成自签 CA，存于 `cacert/` 文件夹。
    - 首次运行会把该 CA 装进 Windows **根证书存储**（受信任的根证书颁发机构），**影响范围是本机所有 HTTPS 流量的信任链**，不只是 GitHub——实际被 MITM 解密的范围由你在加速页的勾选清单决定。
    - ⚠ **私钥明文存于 `cacert/fastgithub.key`。任何拿到它的人，都能解密你已勾选站点的 HTTPS 流量。请勿分发运行过的程序目录**（国内「绿色版二次分发」很常见，构建脚本拦不住下游）。
@@ -189,7 +189,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 - **HuggingFace 走第三方镜像**：`huggingface.co` 的请求会被重定向到 `hf-mirror.com`，**带 token / cookie 的请求同样会经过该镜像**。不要在启用加速时提交你不希望第三方看到的私有资源请求（详见第 9 节）。
 - **内核驱动**：WinDivert 为内核态驱动，需管理员提权；仅在运行时加载，停止即卸载。（驱动二进制随 WindivertDotnet **内嵌于发布包**，zip 内看不到 `.sys` 属正常，首次运行由库自动解压安装——与官方 `fastgithub-win-x64.zip` 结构一致）
-- **无系统代理冲突**：因不改系统代理，可与 Steam++/Watt Toolkit 等并存（但没必要同时开同类工具）。
+- **系统代理开关未被修改**：`ProxyEnable` / `ProxyServer` 不动，但 `ProxyOverride`（绕过列表）会被追加加速域名。与 Steam++/Watt Toolkit 并存时不冲突，但两者会往同一个列表里写条目，卸载后需按 **7.3** 清理。
 - **卸载与残留**：不再使用时请运行 `clean.cmd`（见 7.1）。不要使用来路不明的远程配置或二次分发的程序目录。
 
 ### 7.1 卸载与清理
@@ -221,6 +221,24 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 ```
 
 > 不打算把私钥迁到 `%ProgramData%`：该目录默认继承的 ACL 反而更松（Everyone 可读），且写入需管理员权限，与免安装定位冲突。
+
+### 7.3 对系统的实际改动清单
+
+除第 7 节的 CA 与 git 配置外，程序还会在系统上留下下列痕迹。`clean.cmd` 可撤销其中带 ✅ 的项：
+
+| 位置 | 内容 | 能否由 clean.cmd 撤销 |
+|---|---|---|
+| `HKCU\...\Internet Settings\ProxyOverride` | **追加加速域名绕过项**（实测可达数十条，含 `*.github.com` / `*.nuget.org` / `*.s3.amazonaws.com` 等）。上游只在**优雅停机**时移除，进程被强杀或崩溃时这些条目会**永久留在系统里** | ✅ `[3/7]`（仅删除能精确匹配本程序 `appsettings` 片段域名的条目，不动你原有的其它条目） |
+| `%APPDATA%\WindivertDotnet\` | WinDivert 内核驱动副本（`WinDivert64.sys` / `WinDivert.dll`），由 WindivertDotnet 解压，**「文件已存在即跳过」、永不复查** | ✅ `[6/7]` |
+| `drivers\etc\hosts` | 命中加速域名的行被注释掉；**上游没有实现恢复逻辑** | ❌ 需手工检查 |
+| Windows 服务 `fastgithub` / `FastGithub.dnscrypt-proxy` | 仅当你执行过 `fastgithub.exe start` 才存在；`AUTO_START` + `LocalSystem`，**会开机自启** | ✅ `[7/7]` |
+| `HKCU\...\FeatureControl\*` | UI 写入的浏览器内核版本 / DPI 兼容设置（无害） | ❌ 无需处理 |
+
+> ⚠ **WinDivert 驱动副本落在 `%APPDATA%`（用户可写目录），且加载前不校验完整性。** 同机任意用户态程序若改写该 `.sys`，在你下次「以管理员身份运行」时会被加载为**内核驱动**。建议把程序解压到受控目录（如 `D:\Tools\`，而非 Downloads / 桌面），以获得更严格的 ACL 保护。
+
+> ⚠ **服务模式存在两处静默错位**：以 SYSTEM 身份运行 `fastgithub.exe start` 时，`git config --global` 写的是 SYSTEM 的 profile（对真实用户无效）、注册表代理设置写的是 `.DEFAULT` hive（同样无效）。也就是「让 git 信任本机 CA」与「代理绕过」在服务模式下**不生效**。本工具推荐桌面模式使用。
+
+> **窗口按钮语义**：点「×」= 收起窗口到托盘（引擎继续运行）；点「—」= 正常最小化到任务栏；真正退出请用托盘右键「退出应用」。本仓库已修正上游「最小化与关闭都只 `Hide()`、两者表现完全一致」的行为。
 
 ---
 

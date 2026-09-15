@@ -26,6 +26,14 @@ namespace FastGithub.UI
         internal static Process? EngineProcess { get; private set; }
 
         /// <summary>
+        /// [PATCH] 引擎启停的串行化锁。
+        /// StartEngine / StopEngine 都是可重入的（勾选站点与启停按钮都可能在 UI 线程并发触发），
+        /// 无锁时会出现「两个线程都判定引擎未运行 → 起两个 fastgithub.exe」，
+        /// 后起的抢不到 38457 端口立即退出，而 EngineProcess 被它覆盖 → UI 显示已停止但引擎仍在跑。
+        /// </summary>
+        private static readonly object engineLock = new object();
+
+        /// <summary>
         /// 锚点进程：fastgithub 把它当成“父进程”监听其退出以走优雅停机路径。
         /// UI 自身不退出时，我们杀掉此锚点即可触发 fastgithub 的
         /// WaitForParentProcessExitAsync -> host.StopAsync()，从而清理 dnscrypt-proxy
@@ -45,7 +53,7 @@ namespace FastGithub.UI
                 return;
             }
 
-            StartEngine();
+            StartEngine(verify: false);   // 启动时不等校验，避免窗口延后显示
             SetWebBrowserDPI();
             SetWebBrowserVersion();
 
@@ -112,34 +120,68 @@ namespace FastGithub.UI
         /// <summary>
         /// 启动加速引擎（若已在运行则忽略）
         /// </summary>
-        internal static void StartEngine()
+        /// <param name="verify">
+        /// 是否等待并校验引擎确实存活。用户在 UI 上主动启动时用 true（失败要能报出来）；
+        /// 程序启动时用 false —— 否则窗口会因这 1.5 秒延后显示，而启动状态在
+        /// 加速面板加载时会立刻回显给用户。
+        /// </param>
+        internal static bool StartEngine(bool verify = true)
         {
-            if (IsEngineRunning)
+            lock (engineLock)
             {
-                return;
+                if (IsEngineRunning)
+                {
+                    return true;
+                }
+
+                // [PATCH] 绝对路径化（见类顶部说明）：不再依赖 CreateProcess 的目录搜索顺序
+                var enginePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, FASTGITHUB_PATH);
+                if (File.Exists(enginePath) == false)
+                {
+                    return false;
+                }
+
+                // 拉起锚点进程，作为 fastgithub 名义上的“父进程”
+                EnsureAnchor();
+                var parentPid = (_anchorProcess != null && _anchorProcess.HasExited == false)
+                    ? _anchorProcess.Id
+                    : Process.GetCurrentProcess().Id;   // 锚点不可用时回退为 UI 自身（行为等价旧版）
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = enginePath,
+                    Arguments = $"ParentProcessId={parentPid} UdpLoggerPort={UdpLogger.Port}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+
+                Process? process;
+                try
+                {
+                    process = Process.Start(startInfo);
+                }
+                catch
+                {
+                    return false;
+                }
+                if (process == null)
+                {
+                    return false;
+                }
+                EngineProcess = process;
+
+                // [PATCH] 原实现启动后不做任何校验：exe 缺失、被杀软拦截、38457 端口被占用、
+                // WinDivert 驱动加载失败等情况都会静默表现为「没在加速」，而 UI 仍显示运行中。
+                // 给引擎 1.5 秒：若在此期间自行退出，判定为启动失败。
+                if (verify && process.WaitForExit(1500) && process.HasExited)
+                {
+                    try { process.Dispose(); } catch { }
+                    EngineProcess = null;
+                    return false;
+                }
+
+                return true;
             }
-
-            // [PATCH] 绝对路径化（见类顶部说明）：不再依赖 CreateProcess 的目录搜索顺序
-            var enginePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, FASTGITHUB_PATH);
-            if (File.Exists(enginePath) == false)
-            {
-                return;
-            }
-
-            // 拉起锚点进程，作为 fastgithub 名义上的“父进程”
-            EnsureAnchor();
-            var parentPid = (_anchorProcess != null && _anchorProcess.HasExited == false)
-                ? _anchorProcess.Id
-                : Process.GetCurrentProcess().Id;   // 锚点不可用时回退为 UI 自身（行为等价旧版）
-
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = enginePath,
-                Arguments = $"ParentProcessId={parentPid} UdpLoggerPort={UdpLogger.Port}",
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            EngineProcess = Process.Start(startInfo);
         }
 
         /// <summary>
@@ -149,38 +191,45 @@ namespace FastGithub.UI
         /// </summary>
         internal static void StopEngine(bool graceful = true)
         {
-            if (EngineProcess == null)
+            lock (engineLock)
             {
-                TryDisposeAnchor();
-                return;
-            }
+                // [PATCH] 先把引用取到局部变量再置空：原实现全程读静态属性 EngineProcess，
+                // 而并发调用会把它置空 / 换掉，导致杀错进程或漏杀（TOCTOU）。
+                var process = EngineProcess;
+                EngineProcess = null;
 
-            if (graceful)
-            {
-                // 触发 fastgithub 的 WaitForParentProcessExitAsync -> host.StopAsync()
-                TryKillAnchor();
-                // 确认锚点已真正退出（fastgithub 已收到“父进程退出”信号）再等引擎收尾
-                try { WaitForAnchorExit().Wait(2000); } catch { }
-                try
+                if (process == null)
                 {
-                    if (EngineProcess.HasExited == false && EngineProcess.WaitForExit(5000) == false)
+                    TryDisposeAnchor();
+                    return;
+                }
+
+                if (graceful)
+                {
+                    // 触发 fastgithub 的 WaitForParentProcessExitAsync -> host.StopAsync()
+                    TryKillAnchor();
+                    // 确认锚点已真正退出（fastgithub 已收到“父进程退出”信号）再等引擎收尾
+                    try { WaitForAnchorExit().Wait(2000); } catch { }
+                    try
                     {
-                        EngineProcess.Kill();   // 超时兜底：强杀
+                        if (process.HasExited == false && process.WaitForExit(5000) == false)
+                        {
+                            process.Kill();   // 超时兜底：强杀
+                        }
+                    }
+                    catch
+                    {
+                        try { process.Kill(); } catch { }
                     }
                 }
-                catch
+                else
                 {
-                    try { EngineProcess.Kill(); } catch { }
+                    try { if (process.HasExited == false) process.Kill(); } catch { }
                 }
-            }
-            else
-            {
-                try { if (EngineProcess.HasExited == false) EngineProcess.Kill(); } catch { }
-            }
 
-            try { EngineProcess.Dispose(); } catch { }
-            EngineProcess = null;
-            TryDisposeAnchor();
+                try { process.Dispose(); } catch { }
+                TryDisposeAnchor();
+            }
         }
 
         /// <summary>
