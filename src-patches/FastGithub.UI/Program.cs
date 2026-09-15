@@ -13,6 +13,11 @@ namespace FastGithub.UI
     {
         private const string MUTEX_NAME = "Global\\FastGithub.UI";
         private const string MAIN_WINDOWS = "MainWindow.xaml";
+        // [PATCH] 本 UI 以管理员运行，所有外部可执行文件都必须用绝对路径启动。
+        // 原因：UseShellExecute=false 时 CreateProcess 的搜索顺序是
+        // 「应用程序目录 → 当前目录 → System32 → PATH」，前两项都指向程序目录，
+        // 而程序目录通常解压在 Downloads 等用户可写位置、ACL 只保护到「同一用户」——
+        // 使用者本身又是管理员，因此投放同名 exe 即可无 UAC 提示静默提权，且每次启动触发。
         private const string FASTGITHUB_PATH = "fastgithub.exe";
 
         /// <summary>
@@ -114,7 +119,9 @@ namespace FastGithub.UI
                 return;
             }
 
-            if (File.Exists(FASTGITHUB_PATH) == false)
+            // [PATCH] 绝对路径化（见类顶部说明）：不再依赖 CreateProcess 的目录搜索顺序
+            var enginePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, FASTGITHUB_PATH);
+            if (File.Exists(enginePath) == false)
             {
                 return;
             }
@@ -127,7 +134,7 @@ namespace FastGithub.UI
 
             var startInfo = new ProcessStartInfo
             {
-                FileName = FASTGITHUB_PATH,
+                FileName = enginePath,
                 Arguments = $"ParentProcessId={parentPid} UdpLoggerPort={UdpLogger.Port}",
                 UseShellExecute = false,
                 CreateNoWindow = true
@@ -218,9 +225,14 @@ namespace FastGithub.UI
         /// </summary>
         private static Process? StartAnchor(bool redirect)
         {
+            // [PATCH] 锚点进程同样绝对路径化：优先取系统目录下的 ping.exe，
+            // 取不到时才回退为按名字查找（此时仍存在被程序目录劫持的风险，但概率极低）
+            var systemPing = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "ping.exe");
+            var pingPath = File.Exists(systemPing) ? systemPing : "ping";
+
             var psi = new ProcessStartInfo
             {
-                FileName = "ping",
+                FileName = pingPath,
                 Arguments = "-t 127.0.0.1",
                 UseShellExecute = false,
                 CreateNoWindow = true,

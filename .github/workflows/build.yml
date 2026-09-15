@@ -42,12 +42,23 @@ jobs:
       - name: 安全断言 - 源码与产物安全复核
         shell: bash
         run: |
-          if grep -rn "GitConfigSslverify" src/FastGithub.HttpServer/Certs/CertService.cs 2>/dev/null; then
+          # 先判文件存在：grep 对不存在的文件返回退出码 2，若直接 if grep 会被当成
+          # 「没找到」从而通过 —— 补丁没打上时这道闸门恰好失效，属于假阴性。
+          F="src/FastGithub.HttpServer/Certs/CertService.cs"
+          if [ ! -f "$F" ]; then
+            echo "::error::补丁目标文件不存在，[2d] 补丁未生效：$F"
+            exit 1
+          fi
+          if grep -q "GitConfigSslverify" "$F"; then
             echo "::error::补丁未生效：源码中仍存在 GitConfigSslverify（强制关闭 git 全局证书校验）"
             exit 1
           fi
           echo "  已确认源码中不存在 GitConfigSslverify"
 
+          if [ ! -d dist ]; then
+            echo "::error::dist 目录不存在，构建产物缺失"
+            exit 1
+          fi
           if find dist -name "*.key" -print -quit | grep -q .; then
             echo "::error::发布包中检出私钥文件（*.key），构建终止"
             exit 1
@@ -79,7 +90,19 @@ jobs:
             TAG="ci-${GITHUB_RUN_NUMBER}"
             TITLE="GitHub+HuggingFace 加速工具（自动构建 #${GITHUB_RUN_NUMBER}）"
           fi
+          # 产物 SHA256 写进 Release notes，用户下载后可自行校验
+          SHA256="$(cat dist/SHA256.txt 2>/dev/null || echo '(未生成)')"
+          NOTES="Windows 免安装包（自动构建）。
+          解压后以管理员身份运行 FastGithub.UI.exe，首次运行信任本地 CA。
+          卸载：以管理员身份运行包内 clean.cmd（移除本机 CA、恢复 git 配置、删除私钥）。
+          校验：FastGithub-Portable-win-x64.zip 的 SHA256 = ${SHA256}"
+
+          # 幂等：重推同一 tag 重跑时不因 release 已存在而失败（不加 --cleanup-tag，避免删掉触发本次构建的 tag）
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "  已存在 release ${TAG}，先删除再重建"
+            gh release delete "${TAG}" -y
+          fi
           gh release create "${TAG}" \
             dist/FastGithub-Portable-win-x64.zip \
             --title "${TITLE}" \
-            --notes "Windows 免安装包（自动构建）。解压后以管理员身份运行 FastGithub.UI.exe，首次运行信任本地 CA；托盘右键“检测更新”跳转本仓库。卸载请运行仓库根目录 clean.cmd（管理员）。"
+            --notes "${NOTES}"

@@ -28,11 +28,11 @@ if errorlevel 1 (
 echo   [OK] 已获取管理员权限
 echo.
 
-echo [1/4] 移除根证书存储中的 FastGithub CA
+echo [1/5] 移除根证书存储中的 FastGithub CA
 powershell -NoProfile -Command "$c = @(Get-ChildItem 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root' -EA SilentlyContinue | Where-Object { $_.Subject -like '*FastGithub*' }); if ($c.Count -gt 0) { $c | ForEach-Object { Remove-Item $_.PSPath -Force -EA SilentlyContinue }; Write-Host ('  已移除 ' + $c.Count + ' 张证书') } else { Write-Host '  未找到 FastGithub 证书' }"
 echo.
 
-echo [2/4] 恢复 git 配置
+echo [2/5] 恢复 git 配置
 git config --global --unset http.sslVerify 2>nul
 git config --global --unset http.sslBackend 2>nul
 echo   已清理 http.sslVerify / http.sslBackend
@@ -40,22 +40,45 @@ echo   注：若你希望保留 Schannel 后端（让 git 读取 Windows 证书�
 echo       可自行执行：git config --global http.sslBackend schannel
 echo.
 
-echo [3/4] 删除本地 CA 与私钥
+echo [3/5] 删除本地 CA 与私钥
+set "FOUND_CACERT=0"
 if exist "cacert" (
     rd /S /Q "cacert"
+    set "FOUND_CACERT=1"
     echo   已删除 cacert 目录（含私钥 fastgithub.key）
 ) else (
-    echo   未在当前目录找到 cacert（请把本脚本放到程序运行目录再执行）
+    echo   未在当前目录找到 cacert
 )
 echo.
 
-echo [4/4] 确认残留（下面两行有输出即表示仍有遗留）
+echo [4/5] 删除运行期日志
+:: 上游 logs/log.txt 按天滚动、无容量上限，且记录了访问过的域名与路径
+set "FOUND_LOGS=0"
+if exist "logs" (
+    rd /S /Q "logs"
+    set "FOUND_LOGS=1"
+    echo   已删除 logs 目录（含按天滚动的访问日志）
+) else (
+    echo   未找到 logs 目录
+)
+echo.
+
+echo [5/5] 确认残留（下面两行有输出即表示仍有遗留）
 git config --global --get http.sslVerify
 git config --global --get http.sslBackend
 echo   以上两行均无输出 = git 全局配置已恢复默认。
 echo.
-echo ==== 清理完成 ====
-echo.
+
+if "!FOUND_CACERT!"=="0" (
+    echo ==== 清理未完成（重要）====
+    echo   未在本目录找到 cacert，说明这里可能不是程序运行目录。
+    echo   私钥很可能仍留在真实程序目录里，本次清理并未删除它。
+    echo   请把本脚本复制到程序运行目录（cacert 所在目录）后重新运行。
+    echo.
+) else (
+    echo ==== 清理完成 ====
+    echo.
+)
 echo 重要提示：
 echo   1. 请勿分发运行过的程序目录——其中的 cacert\fastgithub.key 是本机生成的
 echo      CA 私钥（明文），任何拿到它的人都能解密你已勾选站点的 HTTPS 流量。

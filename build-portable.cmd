@@ -83,6 +83,15 @@ if not errorlevel 1 (
 )
 echo   [OK] 未检出 GitConfigSslverify
 
+echo [2f] 固定 NuGet 版本（消除浮动预发布版本 7.0.0-rc*）
+:: 上游 FastGithub.csproj 第 12-13 行把 Microsoft.Extensions.Hosting.Systemd / WindowsServices
+:: 写成 Version="7.0.0-rc*" —— 浮动到预发布通道，而这两包都有稳定版 7.0.0。
+:: 注意：UPSTREAM_COMMIT 只锁住了「上游源码」这一个输入，NuGet 依赖是第二个未锁定的输入。
+:: 彻底做法是生成 packages.lock.json 并用 dotnet restore --locked-mode，列为后续项。
+powershell -NoProfile -Command "$p='%SRC%\FastGithub\FastGithub.csproj'; $c=Get-Content -Raw $p; $c=$c.Replace('7.0.0-rc*','7.0.0'); $c | Set-Content $p -Encoding utf8; if ($c -match 'rc\*') { Write-Error '浮动版本未消除'; exit 1 }"
+if errorlevel 1 goto :fail
+echo   [OK] 已将 7.0.0-rc* 固定为 7.0.0
+
 echo [3/6] 注入加速配置（仅新增 HuggingFace 镜像；GitHub 主站配置为仓库原生，不覆盖）
 copy /Y "%SCRIPT_DIR%appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
 
@@ -94,8 +103,18 @@ if errorlevel 1 goto :fail
 
 echo [5/6] 修正 dnscrypt-proxy 目录命名（代码期望 dnscrypt-proxy/，仓库是 @dnscrypt-proxy/）
 if not exist "%PKG%\dnscrypt-proxy" mkdir "%PKG%\dnscrypt-proxy"
-copy /Y "%SRC%\@dnscrypt-proxy\win-x64\dnscrypt-proxy.exe" "%PKG%\dnscrypt-proxy\" || echo [警告] dnscrypt-proxy.exe 未复制，DNS 防污染将降级（仍可加速）
-copy /Y "%SRC%\@dnscrypt-proxy\dnscrypt-proxy.toml"        "%PKG%\dnscrypt-proxy\" || echo [警告] dnscrypt-proxy.toml 未复制
+:: [PATCH] 原实现复制失败只打警告继续（fail-open）。DNS 防污染是安全功能，缺了应硬失败。
+copy /Y "%SRC%\@dnscrypt-proxy\win-x64\dnscrypt-proxy.exe" "%PKG%\dnscrypt-proxy\"
+if errorlevel 1 (echo [错误] dnscrypt-proxy.exe 未复制，DNS 防污染将失效，终止构建 & goto :fail)
+copy /Y "%SRC%\@dnscrypt-proxy\dnscrypt-proxy.toml"        "%PKG%\dnscrypt-proxy\"
+if errorlevel 1 (echo [错误] dnscrypt-proxy.toml 未复制，终止构建 & goto :fail)
+
+echo [5g] dnscrypt-proxy 完整性校验（基线固定，非"已审计"：无法逆向 7MB 二进制）
+:: 该 exe 是 git blob，UPSTREAM_COMMIT 已从内容上绑定它；本校验的作用是
+:: 「审计结论以哈希形式沉淀下来」，使后续任何变更都能被检出，而不是静默换包。
+powershell -NoProfile -Command "$f='%PKG%\dnscrypt-proxy\dnscrypt-proxy.exe'; if (-not (Test-Path $f)) { Write-Error 'dnscrypt-proxy.exe 缺失'; exit 1 }; $h=(Get-FileHash $f -Algorithm SHA256).Hash; if ($h -ne 'D91AEB9462B91F5B503BA6FDC5CE118E6C475AFC0030059BB706BC3DB6BB0469') { Write-Error ('dnscrypt-proxy 哈希不匹配，基线 D91AEB94...，实际 '+$h); exit 1 }"
+if errorlevel 1 goto :fail
+echo   [OK] dnscrypt-proxy 哈希匹配基线（7,517,696 字节）
 
 echo [5b]  WinDivert 驱动：单文件发布时 WinDivert64.sys/WinDivert.dll 已由 WindivertDotnet 内嵌进 fastgithub.exe，
 echo       运行时自动解压安装内核驱动；zip 内看不到 .sys 属正常。以下仅作非单文件场景的兼容兜底。
@@ -110,6 +129,15 @@ if not exist "%PKG%\WinDivert64.sys" (
 
 echo [5c] 创建 appsettings/disabled 目录（停用站点片段存放处，引擎不扫描该子目录）
 if not exist "%PKG%\appsettings\disabled" mkdir "%PKG%\appsettings\disabled"
+
+echo [5h] 随包分发卸载脚本与安全说明
+:: 少了这一步，用户解压后拿不到 clean.cmd，也看不到任何安全提示——
+:: 「卸载干净」这条会在分发环节断掉（README 同样不在 publish 产物里）。
+copy /Y "%SCRIPT_DIR%clean.cmd" "%PKG%\"
+if errorlevel 1 (echo [错误] clean.cmd 未随包分发 & goto :fail)
+copy /Y "%SCRIPT_DIR%README.md" "%PKG%\README.md"
+if errorlevel 1 (echo [错误] README.md 未随包分发 & goto :fail)
+echo   [OK] clean.cmd + README.md 已随包
 
 echo [5d] 默认站点收敛（默认启用：%DEFAULT_SITES%；其余移入 appsettings\disabled\）
 for %%f in ("%PKG%\appsettings\appsettings.*.json") do (
@@ -145,7 +173,8 @@ if errorlevel 1 goto :fail
 
 echo.
 echo [校验] 产物 SHA256：
-powershell -NoProfile -Command "(Get-FileHash '%DIST%\FastGithub-Portable-win-x64.zip' -Algorithm SHA256).Hash"
+:: 同时落盘 dist\SHA256.txt，供 CI 写进 Release notes（用户下载后可自行校验）
+powershell -NoProfile -Command "$h=(Get-FileHash '%DIST%\FastGithub-Portable-win-x64.zip' -Algorithm SHA256).Hash; $h | Set-Content '%DIST%\SHA256.txt' -Encoding ascii; $h"
 echo.
 echo [完成] 免安装包：%DIST%\FastGithub-Portable-win-x64.zip
 echo   使用：解压后右键“以管理员身份运行” FastGithub.UI.exe（WinDivert 需管理员）

@@ -17,7 +17,15 @@ namespace FastGithub.HttpServer.Certs
     /// </summary>
     sealed class CertService
     {
-        private const string CACERT_PATH = "cacert";
+        // [PATCH] 原为相对路径 "cacert"，解析依赖进程的当前工作目录。
+        // 上游 FastGithub/Program.cs 确实会把 Environment.CurrentDirectory 设为 exe 所在目录，
+        // 但那行被包在 if (string.IsNullOrEmpty(contentRoot) == false) 里——
+        // Environment.ProcessPath 为空时会静默跳过，此时本路径会落到宿主的默认工作目录
+        // （Windows 服务模式下通常是 C:\Windows\System32）。
+        // 显式基于程序所在目录，彻底消除对宿主 CWD 的隐式依赖。
+        private static readonly string CACERT_PATH = Path.Combine(
+            Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory,
+            "cacert");
         private readonly IMemoryCache serverCertCache;
         private readonly IEnumerable<ICaCertInstaller> certInstallers;
         private readonly ILogger<CertService> logger;
@@ -58,7 +66,15 @@ namespace FastGithub.HttpServer.Certs
         {
             if (File.Exists(this.CaCerFilePath) && File.Exists(this.CaKeyFilePath))
             {
-                return false;
+                // [PATCH] 到期轮换：上游只判「两个文件是否都在」，完全不看有效期。
+                // 而 CertGenerator.CreateEndCertificate 会把终端证书的 notAfter 夹到签发者 CA 的
+                // NotAfter —— CA 一过期，签出的证书立即不受信（硬失败，UI 无任何提示）。
+                // 剩余有效期不足 30 天时重新签发，避免撞上硬失败。
+                if (IsCaCertStillValid())
+                {
+                    return false;
+                }
+                this.logger.LogWarning("本地 CA 证书已过期或即将过期（剩余有效期不足 30 天），将重新生成；请重新启动加速以信任新的 CA 证书。");
             }
 
             File.Delete(this.CaCerFilePath);
@@ -79,6 +95,24 @@ namespace FastGithub.HttpServer.Certs
             File.WriteAllText(this.CaCerFilePath, new string(certPem), Encoding.ASCII);
 
             return true;
+        }
+
+        /// <summary>
+        /// [PATCH] 判断现有 CA 证书是否仍可继续使用（剩余有效期 &gt; 30 天）
+        /// </summary>
+        /// <returns>仍可使用时返回 true；过期、临近过期或文件损坏时返回 false</returns>
+        private bool IsCaCertStillValid()
+        {
+            try
+            {
+                using var cert = new X509Certificate2(this.CaCerFilePath);
+                return cert.NotAfter > DateTime.Now.AddDays(30);
+            }
+            catch (Exception)
+            {
+                // 文件损坏或无法解析时视为不可用，走重新生成流程
+                return false;
+            }
         }
 
         /// <summary>
@@ -137,6 +171,10 @@ namespace FastGithub.HttpServer.Certs
         /// <returns>是否执行成功</returns>
         private static bool RunGitConfig(string arguments)
         {
+            // [PATCH] 按名字启动 git 存在程序目录劫持风险：UseShellExecute=false 时
+            // CreateProcess 的搜索顺序是「应用程序目录 → 当前目录 → System32 → PATH」，
+            // 前两项都指向程序目录（通常解压在用户可写位置，而本程序以管理员运行）。
+            // 把 WorkingDirectory 设为系统目录，至少消除第二项。
             try
             {
                 using var process = Process.Start(new ProcessStartInfo
@@ -145,7 +183,7 @@ namespace FastGithub.HttpServer.Certs
                     Arguments = $"config --global {arguments}",
                     UseShellExecute = false,
                     CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
+                    WorkingDirectory = Environment.SystemDirectory
                 });
 
                 return process != null && process.WaitForExit(5000);
@@ -172,7 +210,7 @@ namespace FastGithub.HttpServer.Certs
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     CreateNoWindow = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
+                    WorkingDirectory = Environment.SystemDirectory
                 });
 
                 if (process == null)
