@@ -1,0 +1,11 @@
+# Windows 批处理脚本必须以 CRLF 签出
+#
+# 实测（Windows 10.0.26200 / cmd.exe）：UTF-8 中文注释 + LF-only 换行的 .cmd 文件
+# 会导致 cmd.exe 按字节切行时错位——多行 ( ) 块被拆散、`!VAR!` 延迟展开失效、
+# 报 "'xxx' is not recognized as an internal or external command"，脚本直接不可用。
+# 该问题与 chcp 65001 无关。
+#
+# 让 .cmd / .bat 在仓库内统一存 LF，签出与 git archive（含 GitHub 的 Download ZIP）
+# 时强制转 CRLF。
+*.cmd text eol=crlf
+*.bat text eol=crlf

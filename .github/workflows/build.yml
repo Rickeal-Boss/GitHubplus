@@ -22,9 +22,43 @@ jobs:
         with:
           dotnet-version: '7.0.x'
 
+      # 构建前断言：上游源码必须 pin 在已审计的 commit。
+      # 注意不要把「grep src/ 有没有 GitConfigSslverify」放在这一步——
+      # 此时 src/ 还不存在（是 build-portable.cmd 运行时才拉取的），断言会永远通过、形同虚设。
+      - name: 安全断言 - 上游 commit 必须 pin 在已审计版本
+        shell: bash
+        run: |
+          if ! grep -q "f5425ec6750463f64f6b01d15d8010e0b53f94c4" build-portable.cmd; then
+            echo "::error::build-portable.cmd 未 pin 已审计的上游 commit"
+            exit 1
+          fi
+          echo "上游 commit 已固定：f5425ec6750463f64f6b01d15d8010e0b53f94c4"
+
       - name: Build portable package
         shell: cmd
         run: build-portable.cmd
+
+      # 构建后断言：此时 src/ 已由 build-portable.cmd 拉取并打过补丁，断言才有意义
+      - name: 安全断言 - 源码与产物安全复核
+        shell: bash
+        run: |
+          if grep -rn "GitConfigSslverify" src/FastGithub.HttpServer/Certs/CertService.cs 2>/dev/null; then
+            echo "::error::补丁未生效：源码中仍存在 GitConfigSslverify（强制关闭 git 全局证书校验）"
+            exit 1
+          fi
+          echo "  已确认源码中不存在 GitConfigSslverify"
+
+          if find dist -name "*.key" -print -quit | grep -q .; then
+            echo "::error::发布包中检出私钥文件（*.key），构建终止"
+            exit 1
+          fi
+          echo "  已确认发布包中无私钥文件（*.key）"
+
+          if [ -d dist/fastgithub_win-x64/cacert ]; then
+            echo "::error::发布包中检出预置 cacert 目录，构建终止"
+            exit 1
+          fi
+          echo "  已确认发布包中无预置 CA 目录"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -48,4 +82,4 @@ jobs:
           gh release create "${TAG}" \
             dist/FastGithub-Portable-win-x64.zip \
             --title "${TITLE}" \
-            --notes "Windows 免安装包（自动构建）。解压后以管理员身份运行 FastGithub.UI.exe，首次运行信任本地 CA；托盘右键“检测更新”跳转本仓库。"
+            --notes "Windows 免安装包（自动构建）。解压后以管理员身份运行 FastGithub.UI.exe，首次运行信任本地 CA；托盘右键“检测更新”跳转本仓库。卸载请运行仓库根目录 clean.cmd（管理员）。"

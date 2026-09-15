@@ -13,6 +13,8 @@ namespace FastGithub.UI
     /// 加速控制面板：启停加速、勾选要加速的网址、HuggingFace 镜像加速（已去除主站直连 beta）。
     /// 实现不修改 FastGithub 核心代码，仅通过对 appsettings/*.json 片段的启用/停用
     /// 与 fastgithub.exe 子进程的启停来控制加速行为。
+    /// 安全说明：每个勾选框都是一个「本地 CA 解密授权」开关，勾选即代表同意该域名
+    /// 的 HTTPS 流量被本机 CA 解密后转发；所有失败都必须可见，禁止静默吞异常。
     /// </summary>
     public partial class AcceleratorPanel : UserControl
     {
@@ -24,17 +26,21 @@ namespace FastGithub.UI
         private static readonly string BackgroundDir = Path.Combine(AppDir, "ui-background");
         private static readonly string BackgroundCfg = Path.Combine(AppDir, "ui-background.txt");
 
+        // 高危站点：包管理器（NuGet / Maven）与云存储（S3）均信任系统证书存储，
+        // 一旦本地 CA 私钥泄露，可被用于篡改下载的制品，形成供应链攻击。
+        private static readonly HashSet<string> HighRiskSites = new HashSet<string> { "packages", "amazonaws" };
+
         private static readonly Dictionary<string, string> FriendlyNames = new Dictionary<string, string>
         {
             { "github", "GitHub（代码 / API / 克隆 / 图床）" },
             { "huggingface", "HuggingFace（模型 / 数据集）" },
             { "google", "Google" },
             { "microsoft", "Microsoft" },
-            { "amazonaws", "AWS（S3 等）" },
+            { "amazonaws", "AWS（S3 等 · 高风险）" },
             { "fastly", "Fastly CDN" },
             { "imgur", "Imgur" },
             { "bootcss", "BootCDN" },
-            { "packages", "软件包源（Packages）" },
+            { "packages", "软件包源（Packages，含 NuGet/Maven · 高风险）" },
             { "v2ex", "V2EX" }
         };
 
@@ -49,6 +55,9 @@ namespace FastGithub.UI
   }
 }";
 
+        // 当前已知的站点 key 列表（启用目录 + 停用目录的并集），用于统计风险提示
+        private readonly List<string> siteKeys = new List<string>();
+
         public AcceleratorPanel()
         {
             InitializeComponent();
@@ -59,7 +68,7 @@ namespace FastGithub.UI
         {
             RefreshStatus();
             RefreshSites();
-            EnsureHfMirror();
+            WriteHuggingFaceMirror();
             LoadBackground();
         }
 
@@ -97,26 +106,42 @@ namespace FastGithub.UI
         private void RefreshSites()
         {
             SitesPanel.Children.Clear();
+            siteKeys.Clear();
+
             if (Directory.Exists(AppSettingsDir) == false)
             {
+                UpdateRiskHint();
+                UpdateHfHint();
                 return;
             }
 
             var keys = new SortedSet<string>();
-            foreach (var f in Directory.GetFiles(AppSettingsDir, "appsettings.*.json"))
+            try
             {
-                keys.Add(KeyOf(f));
-            }
-            if (Directory.Exists(DisabledDir))
-            {
-                foreach (var f in Directory.GetFiles(DisabledDir, "appsettings.*.json"))
+                foreach (var f in Directory.GetFiles(AppSettingsDir, "appsettings.*.json"))
                 {
                     keys.Add(KeyOf(f));
                 }
+                if (Directory.Exists(DisabledDir))
+                {
+                    foreach (var f in Directory.GetFiles(DisabledDir, "appsettings.*.json"))
+                    {
+                        keys.Add(KeyOf(f));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                ReportError("枚举加速站点配置片段", ex);
+                UpdateRiskHint();
+                UpdateHfHint();
+                return;
             }
 
             foreach (var key in keys)
             {
+                siteKeys.Add(key);
+
                 var cb = new CheckBox
                 {
                     Content = Friendly(key),
@@ -130,6 +155,7 @@ namespace FastGithub.UI
                 SitesPanel.Children.Add(cb);
             }
 
+            UpdateRiskHint();
             UpdateHfHint();
         }
 
@@ -137,26 +163,79 @@ namespace FastGithub.UI
         {
             var cb = (CheckBox)sender;
             var key = (string)cb.Tag;
+            var turningOn = cb.IsChecked == true;
 
-            if (cb.IsChecked == true)
+            // 高危站点：仅在「未选中 -> 选中」时确认一次
+            if (turningOn && HighRiskSites.Contains(key))
             {
-                EnableFragment(key);
-                if (key == "huggingface") WriteHuggingFace();   // 确保 HF 为镜像（清理旧版直连片段）
+                var answer = MessageBox.Show(
+                    "你正在勾选高风险站点：" + Friendly(key) + Environment.NewLine + Environment.NewLine +
+                    "启用后，该站点的 HTTPS 流量会被本机 CA 解密后转发；而包管理器（NuGet / Maven 等）" +
+                    "与 AWS 客户端都信任 Windows 系统证书存储，因此也会信任本 CA。" + Environment.NewLine +
+                    "一旦 cacert\\fastgithub.key 私钥泄露，攻击者可篡改你下载到的软件包或制品，形成供应链攻击。" + Environment.NewLine + Environment.NewLine +
+                    "仅在了解并接受该风险后继续。是否启用？",
+                    "高风险站点确认", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+                if (answer != MessageBoxResult.Yes)
+                {
+                    SetCheckedSilently(cb, false);
+                    UpdateRiskHint();
+                    UpdateHfHint();
+                    return;
+                }
+            }
+
+            var success = true;
+            if (turningOn)
+            {
+                success = EnableFragment(key);
+                if (success && key == "huggingface")
+                {
+                    success = WriteHuggingFaceMirror();   // 确保 HF 为镜像（清理旧版直连片段）
+                }
             }
             else
             {
-                DisableFragment(key);
+                success = DisableFragment(key);
             }
 
+            if (success == false)
+            {
+                // 文件移动/写入失败：回滚勾选状态，避免 UI 与实际不一致
+                SetCheckedSilently(cb, !turningOn);
+            }
+
+            UpdateRiskHint();
             UpdateHfHint();
             await ApplyAndRestart();
         }
 
-        private void EnableFragment(string key)
+        // 静默设置勾选状态：临时解绑/重绑事件，避免触发递归的 Site_Toggled
+        private void SetCheckedSilently(CheckBox cb, bool value)
+        {
+            cb.Checked -= Site_Toggled;
+            cb.Unchecked -= Site_Toggled;
+            cb.IsChecked = value;
+            cb.Checked += Site_Toggled;
+            cb.Unchecked += Site_Toggled;
+        }
+
+        /// <summary>
+        /// 启用站点：把片段从 appsettings/disabled/ 移回 appsettings/
+        /// </summary>
+        /// <returns>是否成功（目标文件确实存在即为成功）</returns>
+        private static bool EnableFragment(string key)
         {
             var src = Path.Combine(DisabledDir, FragmentName(key));
             var dst = Path.Combine(AppSettingsDir, FragmentName(key));
-            if (File.Exists(src))
+
+            // 片段本来就不在停用目录（例如上游默认启用），视为已启用
+            if (File.Exists(src) == false)
+            {
+                return File.Exists(dst);
+            }
+
+            try
             {
                 if (File.Exists(dst))
                 {
@@ -164,13 +243,39 @@ namespace FastGithub.UI
                 }
                 File.Move(src, dst);
             }
+            catch (Exception ex)
+            {
+                ReportError("启用站点 " + Friendly(key), ex);
+                return false;
+            }
+
+            // 结果校验：文件被占用时 File.Move 可能不抛异常却未真正落盘
+            if (File.Exists(dst))
+            {
+                return true;
+            }
+
+            ReportError("启用站点 " + Friendly(key),
+                "片段移动后目标文件不存在，可能因文件被占用而未生效，请关闭占用程序（或已停止加速）后重试。");
+            return false;
         }
 
-        private void DisableFragment(string key)
+        /// <summary>
+        /// 停用站点：把片段从 appsettings/ 移到 appsettings/disabled/
+        /// </summary>
+        /// <returns>是否成功（片段确已不在启用目录即为成功）</returns>
+        private static bool DisableFragment(string key)
         {
             var src = Path.Combine(AppSettingsDir, FragmentName(key));
             var dst = Path.Combine(DisabledDir, FragmentName(key));
-            if (File.Exists(src))
+
+            // 片段本来就不存在（例如上游未提供），无需处理
+            if (File.Exists(src) == false)
+            {
+                return true;
+            }
+
+            try
             {
                 if (Directory.Exists(DisabledDir) == false)
                 {
@@ -182,33 +287,94 @@ namespace FastGithub.UI
                 }
                 File.Move(src, dst);
             }
+            catch (Exception ex)
+            {
+                ReportError("停用站点 " + Friendly(key), ex);
+                return false;
+            }
+
+            // 结果校验：仍留在启用目录说明停用未生效
+            if (File.Exists(src) == false)
+            {
+                return true;
+            }
+
+            ReportError("停用站点 " + Friendly(key),
+                "片段移动后仍留在启用目录，可能因文件被占用而未生效，请关闭占用程序（或已停止加速）后重试。");
+            return false;
         }
 
         #endregion
 
         #region HuggingFace 镜像
 
-        // 确保 HF 片段为镜像模式（清理旧版可能遗留的「主站直连」片段）
-        private void EnsureHfMirror()
+        /// <summary>
+        /// 确保 HF 片段为镜像模式（清理旧版可能遗留的「主站直连」片段）。
+        /// 片段不存在时不做任何事；写入失败会记录日志并弹窗提示，由调用方根据返回值处理。
+        /// </summary>
+        /// <returns>是否成功（片段不存在时视为成功）</returns>
+        private static bool WriteHuggingFaceMirror()
         {
             var frag = Path.Combine(AppSettingsDir, FragmentName("huggingface"));
-            if (File.Exists(frag) == false) return;
-            try { File.WriteAllText(frag, MirrorHuggingFaceJson); } catch { }
-        }
+            if (File.Exists(frag) == false)
+            {
+                return true;
+            }
 
-        private void WriteHuggingFace()
-        {
-            var frag = Path.Combine(AppSettingsDir, FragmentName("huggingface"));
-            if (File.Exists(frag) == false) return;
-            try { File.WriteAllText(frag, MirrorHuggingFaceJson); } catch { }
+            try
+            {
+                File.WriteAllText(frag, MirrorHuggingFaceJson);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                ReportError("写入 HuggingFace 镜像配置", ex);
+                return false;
+            }
         }
 
         private void UpdateHfHint()
         {
             var hfOn = SiteEnabled("huggingface");
             HfHint.Text = hfOn
-                ? "HuggingFace 采用镜像加速（hf-mirror.com，稳定推荐）；修改勾选后自动重启加速以生效。"
+                ? "HuggingFace 采用镜像加速（hf-mirror.com，稳定推荐）；修改勾选后自动重启加速以生效。注意：带 token / cookie 的请求会经过该第三方镜像，请勿在启用加速时提交不希望第三方看到的私有资源请求。"
                 : "先勾选 HuggingFace 以启用镜像加速。";
+        }
+
+        #endregion
+
+        #region 风险提示
+
+        // 勾选即授权：把「当前有多少站点会被本机 CA 解密」如实显示给用户
+        private void UpdateRiskHint()
+        {
+            var enabled = 0;
+            var highRisk = new List<string>();
+
+            foreach (var key in siteKeys)
+            {
+                if (SiteEnabled(key) == false)
+                {
+                    continue;
+                }
+                enabled++;
+                if (HighRiskSites.Contains(key))
+                {
+                    highRisk.Add(Friendly(key));
+                }
+            }
+
+            var text = "当前 " + enabled + " 个站点的 HTTPS 流量将被本机 CA 解密后转发；" +
+                       "私钥明文存于 cacert\\fastgithub.key，请勿外泄。";
+
+            if (highRisk.Count > 0)
+            {
+                text += Environment.NewLine +
+                        "⚠ 已启用高风险站点：" + string.Join("、", highRisk.ToArray()) +
+                        " —— 包管理器与云存储客户端信任系统证书存储，私钥泄露可导致供应链攻击。";
+            }
+
+            RiskHintText.Text = text;
         }
 
         #endregion
@@ -248,6 +414,43 @@ namespace FastGithub.UI
             return FriendlyNames.TryGetValue(key, out var v) ? v : key;
         }
 
+        /// <summary>
+        /// 记录错误日志并弹窗提示（禁止静默吞异常）
+        /// </summary>
+        private static void ReportError(string action, Exception ex)
+        {
+            ReportError(action, ex.Message);
+        }
+
+        /// <summary>
+        /// 记录错误日志并弹窗提示（禁止静默吞异常）
+        /// </summary>
+        private static void ReportError(string action, string detail)
+        {
+            var line = "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + action + "：" + detail;
+
+            // 写日志失败不能影响提示本身，也不能让异常向外扩散
+            try
+            {
+                File.AppendAllText(Path.Combine(AppDir, "ui-error.log"), line + Environment.NewLine);
+            }
+            catch
+            {
+                // 忽略：日志不可写时至少还有弹窗
+            }
+
+            try
+            {
+                MessageBox.Show(action + "失败：" + detail + Environment.NewLine + Environment.NewLine +
+                                "详细信息已写入同目录 ui-error.log。",
+                    "GitHubplus 提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            catch
+            {
+                // 忽略：无界面环境下不因提示失败而崩溃
+            }
+        }
+
         #endregion
 
         #region 界面背景
@@ -276,7 +479,7 @@ namespace FastGithub.UI
             }
             catch (Exception ex)
             {
-                MessageBox.Show("设置背景失败：" + ex.Message, "界面背景", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ReportError("设置界面背景", ex);
             }
         }
 
@@ -291,7 +494,10 @@ namespace FastGithub.UI
                     File.Delete(BackgroundCfg);
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                ReportError("恢复默认背景", ex);
+            }
             ClearBackground();
         }
 
@@ -310,7 +516,10 @@ namespace FastGithub.UI
                     }
                 }
             }
-            catch { }
+            catch (Exception ex)
+            {
+                ReportError("加载已保存的界面背景", ex);
+            }
             ClearBackground();
         }
 
@@ -329,9 +538,10 @@ namespace FastGithub.UI
                 img.Visibility = Visibility.Visible;
                 BgPathText.Text = "当前：自定义背景（" + Path.GetFileName(path) + "）";
             }
-            catch
+            catch (Exception ex)
             {
                 BgPathText.Text = "当前：默认背景（图片加载失败）";
+                ReportError("应用界面背景", ex);
             }
         }
 

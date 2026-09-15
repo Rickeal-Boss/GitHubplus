@@ -40,9 +40,14 @@
 
         <!-- 网址清单 -->
         <Border Grid.Row="2" Background="White" CornerRadius="6" Padding="14" Margin="0 0 0 10">
-            <DockPanel>
-                <TextBlock Text="加速网址（勾选启用，取消即停用）" FontSize="14" FontWeight="Bold"
+            <!-- LastChildFill="True"：最后一个子元素 ScrollViewer 填充「标题与风险提示之间」的剩余空间，
+                 站点较多时可滚动；风险提示 TextBlock 稳定停靠在底部 -->
+            <DockPanel LastChildFill="True">
+                <TextBlock Text="加速网址（勾选 = 授权该域名流量被本机 CA 解密）" FontSize="14" FontWeight="Bold"
                            DockPanel.Dock="Top" Margin="0 0 0 8"/>
+                <TextBlock x:Name="RiskHintText" DockPanel.Dock="Bottom" Margin="0 8 0 0"
+                           FontSize="11" Foreground="#B00020" TextWrapping="Wrap"
+                           Text="提示：勾选的站点，其 HTTPS 流量会由本机 CA 解密后转发。"/>
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel x:Name="SitesPanel"/>
                 </ScrollViewer>
