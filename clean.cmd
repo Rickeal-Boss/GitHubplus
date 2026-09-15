@@ -4,10 +4,12 @@ chcp 65001 >nul
 
 :: ============================================================
 :: GitHubplus 卸载清理脚本
-:: 作用：1) 移除本机根证书存储中的 FastGithub CA
+:: 作用：0) 结束运行中的加速进程（否则私钥被占用，删不掉却报成功）
+::       1) 移除本机根证书存储中的 FastGithub CA
 ::       2) 恢复被旧版本改动的 git 全局配置
 ::       3) 删除本地 CA 与私钥（cacert/）
-::       4) 回显残留以便确认
+::       4) 删除运行期日志与界面残留（logs/ ui-error.log ui-background）
+::       5) 回显残留以便确认
 :: 用法：把本文件放到程序运行目录（cacert/ 所在目录），
 ::       右键“以管理员身份运行”（清理 LocalMachine 根存储必须提权）
 :: ============================================================
@@ -33,6 +35,22 @@ if errorlevel 1 (
 echo   [OK] 已获取管理员权限
 echo.
 
+echo [0/5] 结束正在运行的加速进程
+:: 关键：引擎运行时 cacert\ 里的私钥处于占用状态，直接 rd /S /Q 会静默失败，
+:: 而脚本仍会报「清理完成」——必须在删文件之前先停掉。
+:: 不用 `tasklist | find` 判断进程是否存在：Git Bash / Cygwin 等终端的 PATH 里，
+:: GNU find 会抢在 Windows 的 find.exe 前面，导致管道判断静默失效（引擎其实没被停掉）。
+:: 直接 taskkill：命中返回 0，未找到进程返回非 0，忽略即可。
+taskkill /IM fastgithub.exe /F >nul 2>&1
+if not errorlevel 1 echo   已结束 fastgithub.exe
+taskkill /IM FastGithub.UI.exe /F >nul 2>&1
+if not errorlevel 1 echo   已结束 FastGithub.UI.exe
+taskkill /IM dnscrypt-proxy.exe /F >nul 2>&1
+if not errorlevel 1 echo   已结束 dnscrypt-proxy.exe
+:: 给进程退出与文件句柄释放留出时间
+ping -n 3 127.0.0.1 >nul
+echo.
+
 echo [1/5] 移除根证书存储中的 FastGithub CA
 powershell -NoProfile -Command "$c = @(Get-ChildItem 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root' -EA SilentlyContinue | Where-Object { $_.Subject -like '*FastGithub*' }); if ($c.Count -gt 0) { $c | ForEach-Object { Remove-Item $_.PSPath -Force -EA SilentlyContinue }; Write-Host ('  已移除 ' + $c.Count + ' 张证书') } else { Write-Host '  未找到 FastGithub 证书' }"
 echo.
@@ -56,7 +74,7 @@ if exist "cacert" (
 )
 echo.
 
-echo [4/5] 删除运行期日志
+echo [4/5] 删除运行期日志与界面残留
 :: 上游 logs/log.txt 按天滚动、无容量上限，且记录了访问过的域名与路径
 set "FOUND_LOGS=0"
 if exist "logs" (
@@ -65,6 +83,16 @@ if exist "logs" (
     echo   已删除 logs 目录（含按天滚动的访问日志）
 ) else (
     echo   未找到 logs 目录
+)
+:: 界面补丁（AcceleratorPanel）写出的残留：错误日志 + 自定义背景图片与路径记录
+if exist "ui-error.log" (
+    del /F /Q "ui-error.log"
+    echo   已删除 ui-error.log
+)
+if exist "ui-background.txt" del /F /Q "ui-background.txt"
+if exist "ui-background" (
+    rd /S /Q "ui-background"
+    echo   已删除 ui-background 目录（自定义界面背景）
 )
 echo.
 
