@@ -29,10 +29,10 @@ jobs:
           # 属于「构建期执行外部代码」的场景，故不保留凭据。
           persist-credentials: false
 
-      - name: Setup .NET 7 SDK
+      - name: Setup .NET 10 SDK
         uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
-          dotnet-version: '7.0.x'
+          dotnet-version: '10.0.x'
 
       # 构建前断言：上游源码必须 pin 在已审计的 commit。
       # 注意不要把「grep src/ 有没有 GitConfigSslverify」放在这一步——
@@ -76,6 +76,46 @@ jobs:
             exit 1
           fi
           echo "  已确认主窗体补丁生效（最小化与关闭语义已拆开）"
+
+          # [2g] 证书缓存补丁：ServiceCollectionExtensions.cs 必须含 SizeLimit
+          F2="src/FastGithub.HttpServer/ServiceCollectionExtensions.cs"
+          if [ ! -f "$F2" ]; then
+            echo "::error::[2g] 补丁未生效：$F2 不存在（证书缓存无上限）"
+            exit 1
+          fi
+          if ! grep -q "SizeLimit" "$F2"; then
+            echo "::error::[2g] 补丁未生效：ServiceCollectionExtensions.cs 不含 SizeLimit"
+            exit 1
+          fi
+          echo "  已确认证书缓存补丁生效（AddMemoryCache 配置了 SizeLimit）"
+
+          # [2h] net10 迁移：Directory.Build.props 必须含 net10.0
+          F3="src/Directory.Build.props"
+          if [ ! -f "$F3" ]; then
+            echo "::error::[2h] 补丁未生效：$F3 不存在（TargetFramework 未迁移）"
+            exit 1
+          fi
+          if ! grep -q "net10.0" "$F3"; then
+            echo "::error::[2h] 补丁未生效：Directory.Build.props 仍为 net7.0（已 EOL）"
+            exit 1
+          fi
+          if grep -q "net7.0" "$F3"; then
+            echo "::error::[2h] 补丁未生效：Directory.Build.props 仍含 net7.0"
+            exit 1
+          fi
+          echo "  已确认 TargetFramework 已迁移到 net10.0"
+
+          # [2f] NuGet 版本固定：csproj 不应再有浮动 rc* 版本
+          F4="src/FastGithub/FastGithub.csproj"
+          if [ ! -f "$F4" ]; then
+            echo "::error::[2f] 校验失败：$F4 不存在"
+            exit 1
+          fi
+          if grep -q 'rc\*' "$F4"; then
+            echo "::error::[2f] 补丁未生效：csproj 仍含浮动预发布版本 rc*"
+            exit 1
+          fi
+          echo "  已确认 NuGet 版本已固定（无 rc* 浮动版本）"
 
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"

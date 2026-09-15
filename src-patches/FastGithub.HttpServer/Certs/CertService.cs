@@ -221,17 +221,17 @@ namespace FastGithub.HttpServer.Certs
         {
             // [PATCH] 按名字启动 git 存在程序目录劫持风险：UseShellExecute=false 时
             // CreateProcess 的搜索顺序是「应用程序目录 → 当前目录 → System32 → PATH」，
-            // 前两项都指向程序目录（通常解压在用户可写位置，而本程序以管理员运行）。
-            // 把 WorkingDirectory 设为系统目录，至少消除第二项。
+            // 第一项指向程序目录（通常解压在用户可写位置，而本程序以管理员运行）。
+            // 用 cmd.exe 绝对路径启动：cmd 自身在 System32（消除第一项劫持），
+            // 且 cmd 内部用 PATH 搜索 git（不查应用程序目录）。
             try
             {
                 using var process = Process.Start(new ProcessStartInfo
                 {
-                    FileName = "git",
-                    Arguments = $"config --global {arguments}",
+                    FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                    Arguments = $"/c git config --global {arguments}",
                     UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WorkingDirectory = Environment.SystemDirectory
+                    CreateNoWindow = true
                 });
 
                 return process != null && process.WaitForExit(5000);
@@ -253,12 +253,11 @@ namespace FastGithub.HttpServer.Certs
             {
                 using var process = Process.Start(new ProcessStartInfo
                 {
-                    FileName = "git",
-                    Arguments = $"config --global --get {key}",
+                    FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                    Arguments = $"/c git config --global --get {key}",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
-                    CreateNoWindow = true,
-                    WorkingDirectory = Environment.SystemDirectory
+                    CreateNoWindow = true
                 });
 
                 if (process == null)
@@ -313,6 +312,16 @@ namespace FastGithub.HttpServer.Certs
                 var notBefore = DateTimeOffset.Now.AddDays(-1);
                 var notAfter = DateTimeOffset.Now.AddYears(1);
                 entry.SetAbsoluteExpiration(notAfter);
+
+                // [PATCH] 证书缓存必须有容量计费与淘汰回调：
+                // 1) SetSize(1) 让 AddMemoryCache(SizeLimit=...) 能据此做 LRU 淘汰
+                // 2) X509Certificate2 是非托管句柄，被淘汰时必须 Dispose，否则句柄泄漏。
+                //    原实现两项都缺，访问大量不同子域（如 *.cloudfront.net）会无界增长直至 OOM。
+                entry.SetSize(1);
+                entry.RegisterPostEvictionCallback((key, value, reason, state) =>
+                {
+                    (value as X509Certificate2)?.Dispose();
+                });
 
                 var extraDomains = GetExtraDomains();
 
