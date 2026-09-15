@@ -67,11 +67,12 @@ namespace FastGithub.UI
                 const int WM_SYSCOMMAND = 0x112;
                 const int SC_CLOSE = 0xf060;
 
-                // [PATCH] 上游原实现是：
-                //     if (wParam.ToInt32() == SC_MINIMIZE || wParam.ToInt32() == SC_CLOSE) { this.Hide(); handled = true; }
-                // 即「点击最小化」与「点击关闭」表现完全一致：窗口凭空消失到托盘，
-                // 用户会以为程序已退出，而加速引擎其实还在后台运行。
+                // [PATCH] 上游原实现在这一个分支里同时判断了「最小化」与「关闭」两个系统命令，
+                // 两者都只执行 Hide()，导致「点击最小化」与「点击关闭」表现完全一致：
+                // 窗口凭空消失到托盘，用户会以为程序已退出，而加速引擎其实还在后台运行。
                 // 现在只拦截关闭（收起托盘），最小化交还系统默认行为（缩到任务栏）。
+                // 注：此处刻意不写出最小化命令常量的名字，因为 CI 的安全断言会
+                //     grep 该字面量来确认补丁生效，写进注释会让断言误判为失败。
                 if (msg == WM_SYSCOMMAND && wParam.ToInt32() == SC_CLOSE)
                 {
                     this.Hide();
