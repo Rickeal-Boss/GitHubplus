@@ -56,6 +56,8 @@
 | `src-patches/FastGithub.HttpServer/Certs/CertService.cs` | 证书服务补丁：去掉强制关闭 git 全局校验（改切 `http.sslBackend schannel`）、CA 有效期 10 年 → 5 年 | **新增**（构建时覆盖进克隆源码） |
 | `clean.cmd` | 卸载清理脚本：移除本机根存储中的 FastGithub CA + 恢复 git 配置 + 删除本地 CA 与私钥 | **新增**（需管理员运行） |
 | `.gitattributes` | 强制 `*.cmd` / `*.bat` 以 CRLF 签出，规避 cmd.exe 对「中文 + LF」的解析 bug | **新增** |
+| `src-patches/FastGithub.HttpServer/ServiceCollectionExtensions.cs` | 证书缓存加 `SizeLimit=4096` 上限 + 淘汰时 `Dispose`，避免大量不同子域导致 `X509Certificate2` 句柄无界增长 | **新增**（构建时覆盖进克隆源码） |
+| `src-patches/Directory.Build.props` | `TargetFramework` 由 `net7.0`（2024-05 EOL）迁移到 `net10.0` LTS（EOL 2028-11），self-contained 发布不再内嵌无补丁运行时 | **新增**（构建时覆盖进克隆源码） |
 
 > 把 `appsettings.*.json` 放进 FastGithub 仓库的 `FastGithub/appsettings/` 目录即可（与 `appsettings.github.json` 同级）。
 
@@ -66,7 +68,7 @@
 本目录已提供 **`build-portable.cmd`**，一键产出 `dist/FastGithub-Portable-win-x64.zip`（self-contained 单文件，解压即跑，无需安装 .NET、无需安装服务）。
 
 ```powershell
-# 前置：安装 .NET 7 SDK（FastGithub 目标框架 net7.0 + RuntimeIdentifier win-x64）
+# 前置：安装 .NET 10 SDK（FastGithub 目标框架 net10.0 + RuntimeIdentifier win-x64）
 #       https://dotnet.microsoft.com/download
 #
 # 把 build-portable.cmd 与 appsettings.huggingface.json / appsettings.github.json 放同一目录，双击运行：
@@ -74,7 +76,7 @@ build-portable.cmd
 ```
 
 脚本自动完成：
-1. **前置检测** `.NET 7 SDK`（`where dotnet`）；缺失则直接报错退出。
+1. **前置检测** `.NET 10 SDK`（`where dotnet`）；缺失则直接报错退出。
 2. **按已审计的固定 commit 精确拉取** FastGithub（含 `@dnscrypt-proxy` 目录，**非子模块**，无需 `--recurse-submodules`）。不再 `git clone --depth 1` 追最新代码——当前 pin 在 `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（见脚本顶部 `UPSTREAM_COMMIT`），升级需显式改这一行。
 3. **改写托盘「检测更新」链接**为本仓库 `Rickeal-Boss/GitHubplus`（`MainWindow.xaml.cs` 的 `RELEASES_URI`）。
 4. **注入 UI 增强补丁**：把 `src-patches/FastGithub.UI/` 下的 `Program.cs`、`MainWindow.xaml`、`AcceleratorPanel.xaml(.cs)` 覆盖进 `FastGithub.UI/`，新增「加速」标签页与加速控制面板（启停开关 + 网址勾选 + HF 模式切换）。**不改 FastGithub 核心代码**。
@@ -110,7 +112,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 ## 5. 运行
 
 1. **以管理员身份**运行解压目录里的 `FastGithub.UI.exe`（WinDivert 内核驱动需提权；首次会安装驱动，随进程卸载）。
-   - UI（`FastGithub.UI.exe`）基于 **.NET Framework 4.5（WPF）**，Windows 10/11 自带、无需另行安装 .NET 7；第三方依赖 LiveCharts / Newtonsoft.Json 已作为**内嵌资源**打进 exe（运行时由 `AppDomain.AssemblyResolve` 从资源流加载），包内无需额外 dll 文件。
+   - UI（`FastGithub.UI.exe`）基于 **.NET Framework 4.5（WPF）**，Windows 10/11 自带、无需另行安装 .NET 10；第三方依赖 LiveCharts / Newtonsoft.Json 已作为**内嵌资源**打进 exe（运行时由 `AppDomain.AssemblyResolve` 从资源流加载），包内无需额外 dll 文件。
 2. 程序把加速域名的流量引入本地代理；**不修改系统代理开关（ProxyEnable）与代理服务器（ProxyServer）**，但会往系统代理绕过列表追加加速域名，详见 **7.3**。
 3. **信任本地 CA（请务必读完）**：FastGithub 为每台机器生成自签 CA，存于 `cacert/` 文件夹。
    - 首次运行会把该 CA 装进 Windows **根证书存储**（受信任的根证书颁发机构），**影响范围是本机所有 HTTPS 流量的信任链**，不只是 GitHub——实际被 MITM 解密的范围由你在加速页的勾选清单决定。
@@ -194,12 +196,16 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 ### 7.1 卸载与清理
 
-不再使用时，请到**程序运行目录**以**管理员身份**运行仓库根目录的 `clean.cmd`（清理 `LocalMachine` 根证书存储必须提权，脚本会自检并在未提权时退出）。它依次做四件事：
+不再使用时，请到**程序运行目录**以**管理员身份**运行包内的 `clean.cmd`（清理 `LocalMachine` 根证书存储必须提权，脚本会自检并在未提权时退出；启动时会先切到脚本所在目录，避免右键「以管理员运行」时工作目录被重置到 System32）。它依次做八步：
 
-1. **移除证书**：从 `Cert:\LocalMachine\Root` 与 `Cert:\CurrentUser\Root` 两处删除 Subject 含 `FastGithub` 的证书，并打印移除数量。
-2. **恢复 git 配置**：`git config --global --unset http.sslVerify` 与 `--unset http.sslBackend`。（若你希望保留 Schannel 后端，可自行 `git config --global http.sslBackend schannel`。）
-3. **删除本地 CA 与私钥**：删除 `cacert/` 目录（含 `fastgithub.key`）。
-4. **回显残留**：打印 `http.sslVerify` / `http.sslBackend` 当前值，两行均无输出即表示已恢复默认。
+1. **结束进程**：`fastgithub.exe` / `FastGithub.UI.exe` / `dnscrypt-proxy.exe`（引擎在跑时私钥被占用，不先停会删不掉却报成功）。
+2. **移除证书**：从 `Cert:\LocalMachine\Root` 与 `Cert:\CurrentUser\Root` 删除 Subject 含 `FastGithub` 的证书。
+3. **恢复 git 配置**：`--unset http.sslVerify` / `--unset http.sslBackend` / `--unset http.sslCAInfo`。
+4. **恢复系统代理绕过列表**：从 `HKCU\...\Internet Settings\ProxyOverride` 中**只移除能精确匹配** `appsettings` 片段里加速域名的条目（不动你自己配的）。
+5. **删除本地 CA 与私钥**：删除 `cacert/`（含 `fastgithub.key`）。
+6. **删除运行期日志**：`logs/`、`ui-error.log`、`ui-background/`。
+7. **删除 WinDivert 驱动副本**：`%APPDATA%\WindivertDotnet`（库在首次运行时自动解压的内核驱动，不会被程序卸载）。
+8. **删除可能残留的 Windows 服务**：`fastgithub`、`FastGithub.dnscrypt-proxy`（若装过服务模式），并回显残留确认。
 
 > ⚠ 清理完也**不要分发运行过的程序目录**：`cacert\fastgithub.key` 是本机生成的 CA 私钥（明文）。换机器请用官方 Release 的干净压缩包重新解压。
 
@@ -290,7 +296,7 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyon
 - **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录，任一不符即构建失败。
 - **取构件 / Release**：仓库 **Actions** 页 → 对应运行 → **Artifacts**；或 **Releases** 页直接下载。
 - **手动触发**：Actions 页 → 选工作流 → **Run workflow**。
-- **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 7 SDK；CI 只构建、不加载 WinDivert 驱动（无需管理员）。
+- **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 10 SDK；CI 只构建、不加载 WinDivert 驱动（无需管理员）。
 
 ## 12. 一句话总结
 
