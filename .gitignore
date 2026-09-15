@@ -1,3 +1,12 @@
 # 构建脚本产生的临时/产物目录（勿提交）
 src/
 dist/
+
+# 本地 CA 与私钥（明文，绝不入库；一旦进 git 历史，删文件也无效）
+cacert/
+*.key
+*.pem
+
+# 运行期产物
+ui-error.log
+logs/
