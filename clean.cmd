@@ -12,8 +12,13 @@ chcp 65001 >nul
 ::       右键“以管理员身份运行”（清理 LocalMachine 根存储必须提权）
 :: ============================================================
 
+:: 关键：右键「以管理员身份运行」时 Windows 常把当前目录重置为 C:\Windows\System32，
+:: 会导致下面基于相对路径的 cacert / logs 判断全部落空。强制切到脚本所在目录。
+cd /d "%~dp0"
+
 echo ==== GitHubplus 卸载清理 ====
 echo.
+echo   工作目录：%CD%
 
 echo [权限] 检测管理员权限
 net session >nul 2>&1

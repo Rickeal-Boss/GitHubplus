@@ -16,6 +16,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 默认会把具备 contents: write 的 token 写进 .git/config；
+          # 而本工作流的构建过程会执行上游源码自带的 MSBuild 目标（dotnet publish），
+          # 属于「构建期执行外部代码」的场景，故不保留凭据。
+          persist-credentials: false
 
       - name: Setup .NET 7 SDK
         uses: actions/setup-dotnet@v4
