@@ -90,12 +90,13 @@ echo   [OK] 未检出 GitConfigSslverify
 echo [2f] 固定 NuGet 版本 + 迁移到 .NET 10 LTS
 :: 上游 FastGithub.csproj 第 12-13 行把 Microsoft.Extensions.Hosting.Systemd / WindowsServices
 :: 写成 Version="7.0.0-rc*" —— 浮动到预发布通道。.NET 7 已于 2024-05-14 EOL，
-:: 且 self-contained 发布会把无补丁运行时打进产物。现固定为 10.0.0（LTS，EOL 2028-11）。
+:: 且 self-contained 发布会把无补丁运行时打进产物。现固定为 10.0.12（LTS，EOL 2028-11，
+:: 当前 10.x 最新稳定版；10.0.0 不存在于 NuGet，10.x 从 10.0.8 起）。
 :: 注意：UPSTREAM_COMMIT 只锁住「上游源码」这一个输入，NuGet 依赖是第二个未锁定的输入。
 :: 彻底做法是生成 packages.lock.json 并用 dotnet restore --locked-mode，列为后续项。
-powershell -NoProfile -Command "$p='%SRC%\FastGithub\FastGithub.csproj'; $c=Get-Content -Raw $p; $c=$c.Replace('7.0.0-rc*','10.0.0'); $c | Set-Content $p -Encoding utf8; if ($c -match 'rc\*') { Write-Error '浮动版本未消除'; exit 1 }"
+powershell -NoProfile -Command "$p='%SRC%\FastGithub\FastGithub.csproj'; $c=Get-Content -Raw $p; $c=$c.Replace('7.0.0-rc*','10.0.12'); $c | Set-Content $p -Encoding utf8; if ($c -match 'rc\*') { Write-Error '浮动版本未消除'; exit 1 }"
 if errorlevel 1 goto :fail
-echo   [OK] 已将 7.0.0-rc* 固定为 10.0.0
+echo   [OK] 已将 7.0.0-rc* 固定为 10.0.12
 
 echo [2g] 注入服务注册补丁（证书缓存加容量上限 + 淘汰时 Dispose）
 :: 上游 ServiceCollectionExtensions.cs 的 AddReverseProxy() 用 .AddMemoryCache() 无 SizeLimit，
