@@ -117,6 +117,18 @@ jobs:
           fi
           echo "  已确认 NuGet 版本已固定（无 rc* 浮动版本）"
 
+          # [2i] EKU 收窄：CertGenerator.cs 不应在 OidCollection 里含 tlsClientOid
+          F5="src/FastGithub.HttpServer/Certs/CertGenerator.cs"
+          if [ ! -f "$F5" ]; then
+            echo "::error::[2i] 校验失败：$F5 不存在"
+            exit 1
+          fi
+          if grep -q "tlsServerOid, tlsClientOid" "$F5"; then
+            echo "::error::[2i] 补丁未生效：CertGenerator.cs 仍含 tlsClientOid（MITM CA 不需要客户端认证 EKU）"
+            exit 1
+          fi
+          echo "  已确认 CA 与叶子证书的 EKU 已收窄（移除 tlsClientOid）"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1

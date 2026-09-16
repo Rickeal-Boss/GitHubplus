@@ -219,6 +219,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 | **引擎可能残留后台运行** | 若 UI 被强杀或崩溃，`fastgithub.exe` 可能继续在后台拦截 443 并写日志，而托盘图标已消失、用户无感知 | 在任务管理器中结束 `fastgithub.exe`；或重新打开 UI 点「停止加速」 |
 | **覆盖式升级不收敛默认集** | 「默认只启用 GitHub 与 HuggingFace」只在**全新解压**时生效。若你在旧版本目录上直接覆盖解压，旧版已启用的站点片段仍留在 `appsettings/` 顶层继续生效 | 升级请用全新目录解压；或手动把不需要的 `appsettings.*.json` 移入 `appsettings/disabled/` |
 | **日志无容量上限** | `logs/log.txt` 按天滚动、不清理，记录访问过的**域名与路径**（不含 query） | `clean.cmd` 会一并删除 `logs/` |
+| **未配置域名也会被 MITM 转发** | 当某个域名被 DNS 投毒到 `127.0.0.1`（可能来自其他加速器如 Steam++，或被恶意 DNS 劫持），即使该域名**不在加速列表**，反向代理中间件也会用默认配置（`TlsSni=true`）解密并转发到真实主机。日志会打印"可能已经被DNS污染"警告。这意味着**本机 CA 的解密范围不限于你在 UI 里勾选的站点** | 不要同时运行其他会修改 DNS 的工具；若不需要加速，请停止引擎 |
 
 **私钥 ACL（可选自行加固）**：`cacert\fastgithub.key` 为明文，目录权限继承程序目录。若只想让当前用户与 SYSTEM 可读，可在程序目录执行：
 

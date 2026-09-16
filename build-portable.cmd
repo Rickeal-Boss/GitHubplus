@@ -108,6 +108,14 @@ echo [2h] 注入构建属性补丁（TargetFramework net7.0 -> net10.0 LTS）
 :: FastGithub.UI.csproj 显式 net45，不受 Directory.Build.props 覆盖。
 copy /Y "%SCRIPT_DIR%src-patches\Directory.Build.props" "%SRC%\Directory.Build.props" || goto :fail
 
+echo [2i] 收窄 CA 与叶子证书的 EKU（移除 tlsClientOid）
+:: 上游 CertGenerator.cs 在 CA 与叶子证书的 EKU 里同时含 tlsServerOid + tlsClientOid。
+:: MITM 代理只需 tlsServer，含 tlsClient 意味着私钥泄露后攻击者可伪造客户端 mTLS 证书，
+:: 扩大攻击面（某些企业环境用客户端证书做身份认证）。
+powershell -NoProfile -Command "$p='%SRC%\FastGithub.HttpServer\Certs\CertGenerator.cs'; $c=Get-Content -Raw $p; $c=$c.Replace('new OidCollection { tlsServerOid, tlsClientOid }','new OidCollection { tlsServerOid }'); $c | Set-Content $p -Encoding utf8; if ($c -match 'tlsServerOid, tlsClientOid') { Write-Error 'EKU 收窄失败：仍含 tlsClientOid'; exit 1 }"
+if errorlevel 1 goto :fail
+echo   [OK] 已移除 CA 与叶子证书的 tlsClientOid
+
 
 echo [3/6] 注入加速配置（仅新增 HuggingFace 镜像；GitHub 主站配置为仓库原生，不覆盖）
 copy /Y "%SCRIPT_DIR%appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
