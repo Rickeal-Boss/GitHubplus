@@ -44,6 +44,84 @@ namespace FastGithub.UI
             { "v2ex", "V2EX" }
         };
 
+        // 站点详细说明（鼠标悬停勾选框时显示）：加速范围 / 实现方式 / 风险 / 默认状态。
+        // 内容依据上游对应 appsettings.*.json 的实际 DomainConfigs 整理。
+        private static readonly Dictionary<string, string> SiteDescriptions = new Dictionary<string, string>
+        {
+            { "github",
+              "【加速范围】\n" +
+              "  github.com / api.github.com / gist.github.com / githubstatus.com\n" +
+              "  *.github.com / *.github.io / *.githubusercontent.com（raw 与 Release 下载）\n" +
+              "  *.githubassets.com / *.githubapp.com / vscode-auth.github.com\n" +
+              "【覆盖场景】网页浏览、API 调用、git clone / pull、Release 与 raw 文件、头像图床。\n" +
+              "【实现】直连转发。GitHub 经 CDN 分发，证书 SAN 常与实际域名不一致，故配置了放宽域名匹配校验。\n" +
+              "【默认】启用（本工具的主要用途）。" },
+
+            { "huggingface",
+              "【加速范围】\n" +
+              "  huggingface.co / hf.co / *.huggingface.co（模型与数据集下载）。\n" +
+              "【实现】镜像转发——请求被改发到第三方镜像 hf-mirror.com，并非加速官方站点。\n" +
+              "【⚠ 隐私】带 token / cookie 的请求会完整经过该第三方镜像，\n" +
+              "  请勿在启用加速时提交不希望第三方看到的私有仓库请求。\n" +
+              "【默认】启用。" },
+
+            { "google",
+              "【加速范围】\n" +
+              "  ajax.googleapis.com / fonts.googleapis.com / fonts.gstatic.com /\n" +
+              "  themes.googleusercontent.com —— 以上四项均被重定向到第三方反代\n" +
+              "  gapis.geekzu.org、fonts.geekzu.org（非 Google 官方）。\n" +
+              "  *.gravatar.com —— Gravatar 头像服务，与 Google 无关，且放宽了域名匹配校验。\n" +
+              "【默认】停用。" },
+
+            { "microsoft",
+              "【加速范围】共 26 个域名，主要包括：\n" +
+              "  azure.com 系列 / *.visualstudio.com / *.windows.net / *.azurewebsites.net /\n" +
+              "  *.vscode.cdn.azure.cn / *.aspnetcdn.com / *.vsassets.io / static2.sharepointonline.com。\n" +
+              "【⚠ 隐私风险】其中包含 live.com、onedrive.live.com、microsoftonline.com、\n" +
+              "  aadcdn.msauth.net —— 即 Microsoft 账户登录与 OneDrive 云盘。\n" +
+              "  启用后这些流量同样会被本机 CA 解密，请确认你接受该范围。\n" +
+              "【默认】停用。" },
+
+            { "amazonaws",
+              "【加速范围】\n" +
+              "  s3.amazonaws.com / *.s3.amazonaws.com（S3 对象存储）。\n" +
+              "【⚠ 供应链风险】AWS CLI / SDK 及各类工具信任 Windows 系统证书存储，\n" +
+              "  私钥泄露后可被用于篡改你下载的制品，或窃取经本机转发的临时凭据。\n" +
+              "【默认】停用。" },
+
+            { "fastly",
+              "【加速范围】\n" +
+              "  *.fastly.net 及其多级子域（*.*.fastly.net / *.*.*.fastly.net）。\n" +
+              "【说明】Fastly 是被广泛使用的 CDN，npm、PyPI、GitHub 等大量静态资源由它承载。\n" +
+              "【默认】停用。" },
+
+            { "imgur",
+              "【加速范围】\n" +
+              "  imgur.com / *.imgur.com / *.*.imgur.com（图片托管站）。\n" +
+              "【默认】停用。" },
+
+            { "bootcss",
+              "【加速范围】\n" +
+              "  cdn.bootcss.com —— 被重定向到 cdnjs.cloudflare.com/ajax/libs/。\n" +
+              "  *.cloudflare.com\n" +
+              "【⚠ 范围过宽】Cloudflare 为全球约 20% 的网站提供 CDN 与防护服务，\n" +
+              "  启用后会授权解密所有命中 *.cloudflare.com 的流量（远不止 BootCDN）。\n" +
+              "【默认】停用，且不建议启用。" },
+
+            { "packages",
+              "【加速范围】\n" +
+              "  *.nuget.org（.NET / NuGet）\n" +
+              "  *.maven.org（Java / Maven）\n" +
+              "【⚠ 供应链风险】包管理器信任 Windows 系统证书存储，且下载内容多为\n" +
+              "  可执行代码与构建产物；私钥一旦泄露可导致依赖投毒。\n" +
+              "【默认】停用。" },
+
+            { "v2ex",
+              "【加速范围】\n" +
+              "  v2ex.com / *.v2ex.com（社区论坛）。\n" +
+              "【默认】停用。" }
+        };
+
         // HuggingFace 镜像加速（唯一模式）：转发到 hf-mirror.com
         private const string MirrorHuggingFaceJson = @"{
   ""FastGithub"": {
@@ -154,7 +232,8 @@ namespace FastGithub.UI
                     IsChecked = SiteEnabled(key),
                     Tag = key,
                     Margin = new Thickness(0, 4, 0, 4),
-                    FontSize = 13
+                    FontSize = 13,
+                    ToolTip = BuildSiteToolTip(key)
                 };
                 cb.Checked += Site_Toggled;
                 cb.Unchecked += Site_Toggled;
@@ -434,6 +513,34 @@ namespace FastGithub.UI
         private static string Friendly(string key)
         {
             return FriendlyNames.TryGetValue(key, out var v) ? v : key;
+        }
+
+        /// <summary>
+        /// 构造站点详细说明的悬停提示（宽度受限并自动换行，避免长文本撑满屏幕）
+        /// </summary>
+        private static ToolTip BuildSiteToolTip(string key)
+        {
+            return new ToolTip
+            {
+                Padding = new Thickness(10),
+                FontSize = 12,
+                Content = new TextBlock
+                {
+                    Text = Description(key),
+                    TextWrapping = TextWrapping.Wrap,
+                    MaxWidth = 460
+                }
+            };
+        }
+
+        /// <summary>
+        /// 取站点详细说明；未登记的内置站点给出通用提示而不是空白
+        /// </summary>
+        private static string Description(string key)
+        {
+            return SiteDescriptions.TryGetValue(key, out var v)
+                ? v
+                : "该站点暂无内置说明。\n勾选后，其对应域名的 HTTPS 流量会被本机 CA 解密后转发；\n具体域名范围见程序目录 appsettings\\appsettings." + key + ".json。";
         }
 
         /// <summary>

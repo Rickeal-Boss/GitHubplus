@@ -44,6 +44,14 @@
                  站点较多时可滚动；风险提示 TextBlock 稳定停靠在底部 -->
             <DockPanel LastChildFill="True">
                 <TextBlock Text="加速网址（勾选 = 授权该域名流量被本机 CA 解密）" FontSize="14" FontWeight="Bold"
+                           DockPanel.Dock="Top" Margin="0 0 0 4">
+                    <TextBlock.ToolTip>
+                        <ToolTip Padding="10" FontSize="12" MaxWidth="460">
+                            <TextBlock TextWrapping="Wrap" Text="勾选某个站点 = 授权本机自签 CA 解密该域名范围的 HTTPS 流量，再转发到真实服务器。&#x0a;&#x0a;未勾选的站点不走本机 CA（默认绕过）。&#x0a;&#x0a;解密范围取决于勾选站点在 appsettings 片段里声明的域名，可能比站点名称更宽（例如 BootCDN 含 *.cloudflare.com、Microsoft 含 OneDrive 登录域）。&#x0a;&#x0a;把鼠标悬停在下方每个选项上，可查看其加速范围、实现方式与风险说明。"/>
+                        </ToolTip>
+                    </TextBlock.ToolTip>
+                </TextBlock>
+                <TextBlock Text="鼠标悬停每个选项可查看加速范围、实现方式与风险。" FontSize="11" Foreground="Gray"
                            DockPanel.Dock="Top" Margin="0 0 0 8"/>
                 <TextBlock x:Name="RiskHintText" DockPanel.Dock="Bottom" Margin="0 8 0 0"
                            FontSize="11" Foreground="#B00020" TextWrapping="Wrap"
