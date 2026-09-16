@@ -233,15 +233,16 @@ namespace FastGithub.UI
         }
 
         /// <summary>
-        /// UI 退出时调用：杀掉锚点即可让 fastgithub 自行优雅停机（清理 dnscrypt），
-        /// 不等待、不强杀，让 fastgithub 在后台完成收尾后退出。
+        /// UI 退出时调用：确保引擎与 dnscrypt 子进程被停止。
+        /// 原实现只杀锚点等 fastgithub 自行退出，但若 fastgithub 的
+        /// WaitForParentProcessExitAsync 未响应或 dnscrypt 卡住，引擎会残留，
+        /// 占用 38457 端口导致下次启动失败（ui-error.log 报"端口被占用"）。
+        /// 现改为直接 StopEngine（含 5 秒优雅停机 + 强杀兜底）。
         /// </summary>
         internal static void DetachEngineOnExit()
         {
-            TryKillAnchor();
+            try { StopEngine(graceful: true); } catch { }
             TryDisposeAnchor();
-            try { EngineProcess?.Dispose(); } catch { }
-            EngineProcess = null;
         }
 
         /// <summary>

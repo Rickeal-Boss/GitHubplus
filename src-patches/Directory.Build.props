@@ -6,7 +6,11 @@
 		<IsWebConfigTransformDisabled>true</IsWebConfigTransformDisabled> 		
 		<Description>github加速神器</Description>
 		<Copyright>https://github.com/dotnetcore/FastGithub</Copyright>
-		<RuntimeIdentifier>win-x64</RuntimeIdentifier>	
+		<RuntimeIdentifier>win-x64</RuntimeIdentifier>
+		<!-- [PATCH] net10 默认 JsonSerializerIsReflectionEnabledByDefault=false（source generation 模式），
+		     导致上游 HttpReverseProxyMiddleware.HandleErrorAsync 用匿名类型做 WriteAsJsonAsync
+		     时抛 NotSupportedException。启用反射模式恢复兼容（trim 仍生效，只放开 JSON 反射）。 -->
+		<JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>	
 	</PropertyGroup>
 
 	<PropertyGroup Condition="$(Configuration)=='Release'">
