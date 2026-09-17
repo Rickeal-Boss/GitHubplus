@@ -669,7 +669,7 @@ jobs:
             echo "::error::[P0] dnscrypt 源仍含自引用项（会被自身投毒进 127.0.0.1，拉源请求必然超时）"
             exit 1
           fi
-          if grep -q '\[sources.relays\]' "$F42"; then
+          if grep -qE "sources\.['\"]?relays" "$F42"; then
             echo "::error::[P0] dnscrypt 仍保留无用的 relays 源段（anonymized DNS 未启用，只会触发注定失败的拉取）"
             exit 1
           fi
