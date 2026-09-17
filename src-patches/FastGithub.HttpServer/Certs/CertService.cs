@@ -358,11 +358,16 @@ namespace FastGithub.HttpServer.Certs
                 // 2、X509Certificate2 是非托管句柄，被淘汰时必须 Dispose，否则句柄泄漏。
                 //    原实现两项都缺，访问大量不同子域（如 *.cloudfront.net）会无界增长直至 OOM。
                 entry.SetSize(1);
-                entry.RegisterPostEvictionCallback((key, value, reason, state) =>
+                entry.RegisterPostEvictionCallback((cacheKey, value, reason, state) =>
                 {
                     (value as X509Certificate2)?.Dispose();
-                    // [PATCH] 证书被淘汰时同步清理其签发闸门，避免 certGates 随访问过的域名无界增长
-                    this.certGates.TryRemove(key, out _);
+                    // [PATCH] 证书被淘汰时同步清理其签发闸门，避免 certGates 随访问过的域名无界增长。
+                    // 回调形参 cacheKey 的类型被推断为 object（RegisterPostEvictionCallback 签名如此），
+                    // 故按 string 模式匹配后再用；命名 cacheKey 而非 key，避免遮蔽外层那个 string key。
+                    if (cacheKey is string domainKey)
+                    {
+                        this.certGates.TryRemove(domainKey, out _);
+                    }
                 });
 
                 var extraDomains = GetExtraDomains();

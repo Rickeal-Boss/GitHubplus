@@ -347,8 +347,8 @@ jobs:
             echo "::error::[2w] 补丁未生效：appsettings.github.json 缺少 collector.github.com"
             exit 1
           fi
-          if ! grep -q "204" "$F20"; then
-            echo "::error::[2w] 补丁未生效：collector.github.com 未配置 204 响应"
+          if ! grep -q '"StatusCode": 204' "$F20"; then
+            echo "::error::[2w] 补丁未生效：collector.github.com 未配置 StatusCode 204 响应"
             exit 1
           fi
           echo "  已确认 GitHub collector 片段已生效（collector.github.com -> 204）"
