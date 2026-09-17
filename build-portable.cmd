@@ -7,7 +7,7 @@ set "SCRIPT_DIR=%~dp0"
 
 :: ============================================================
 :: 构建 Windows 免安装包（self-contained 单文件，解压即跑）
-:: 前置：安装 .NET 7 SDK  https://dotnet.microsoft.com/download
+:: 前置：安装 .NET 10 SDK  https://dotnet.microsoft.com/download
 :: 用法：把本文件与 appsettings.*.json、src-patches/ 放在同一目录，双击运行
 :: 产物：dist\FastGithub-Portable-win-x64.zip
 :: ============================================================
@@ -27,8 +27,8 @@ set "DIST=%SCRIPT_DIR%dist"
 set "PKG=%DIST%\fastgithub_win-x64"
 set "PATCHES=%SCRIPT_DIR%src-patches\FastGithub.UI"
 
-echo [前置] 检测 .NET 7 SDK
-where dotnet >nul 2>&1 || (echo [错误] 未检测到 dotnet，请先安装 .NET 7 SDK（https://dotnet.microsoft.com/download） & goto :fail)
+echo [前置] 检测 .NET 10 SDK
+where dotnet >nul 2>&1 || (echo [错误] 未检测到 dotnet，请先安装 .NET 10 SDK（https://dotnet.microsoft.com/download） & goto :fail)
 for /f "tokens=*" %%v in ('dotnet --version') do set "DOTNET_VER=%%v"
 echo   检测到的 dotnet 版本：%DOTNET_VER%
 where git >nul 2>&1 || (echo [错误] 未检测到 git，请先安装 Git for Windows（https://git-scm.com/download/win） & goto :fail)
@@ -97,6 +97,25 @@ echo [2f] 固定 NuGet 版本 + 迁移到 .NET 10 LTS
 powershell -NoProfile -Command "$p='%SRC%\FastGithub\FastGithub.csproj'; $c=Get-Content -Raw $p; $c=$c.Replace('7.0.0-rc*','10.0.12'); $c | Set-Content $p -Encoding utf8; if ($c -match 'rc\*') { Write-Error '浮动版本未消除'; exit 1 }"
 if errorlevel 1 goto :fail
 echo   [OK] 已将 7.0.0-rc* 固定为 10.0.12
+
+echo [2ac] 修复 Yarp.ReverseProxy 高危依赖（1.1.1 -> 1.1.2；GHSA-jrjw-qgr2-wfcg / CVE-2023-33141）
+:: 上游 FastGithub.HttpServer.csproj 直接引用 Yarp.ReverseProxy 1.1.1（受影响范围 <=1.1.1），
+:: 存在 DoS（CWE-400 不受控资源消耗，CVSS 7.5）。1.x 线已有修复版 1.1.2，故保持在 1.x 内升级，
+:: 不跨到 2.x（1.x -> 2.x 是破坏性变更，上游 HttpReverseProxyMiddleware 与本仓库补丁的
+:: RequestLoggingMilldeware 都依赖 1.x 的 HttpForwarder / IHttpForwarder / ForwarderRequestConfig）。
+:: 注：PowerShell 里用 [char]34 拼出双引号，避免在 cmd 的 "..." 参数里再嵌 " 导致解析错乱。
+powershell -NoProfile -Command "$q=[char]34; $old='Yarp.ReverseProxy'+$q+' Version='+$q+'1.1.1'; $new='Yarp.ReverseProxy'+$q+' Version='+$q+'1.1.2'; $p='%SRC%\FastGithub.HttpServer\FastGithub.HttpServer.csproj'; $c=Get-Content -Raw $p; $c=$c.Replace($old,$new); $c | Set-Content $p -Encoding utf8; $r=Get-Content -Raw $p; if ($r.Contains($old) -or ($r.Contains($new) -eq $false)) { Write-Error 'Yarp.ReverseProxy 未成功升到 1.1.2'; exit 1 }"
+if errorlevel 1 goto :fail
+echo   [OK] 已将 Yarp.ReverseProxy 1.1.1 升到 1.1.2
+
+echo [2ad] 修复 Microsoft.Extensions.Caching.Memory 高危依赖（6.0.1 -> 10.0.12；GHSA-qj66-m88j-hmgj / CVE-2024-43483）
+:: 上游 FastGithub.DomainResolve.csproj 直接引用 Microsoft.Extensions.Caching.Memory 6.0.1
+:: （受影响范围 <=6.0.1），存在哈希洪泛导致的 DoS。项目已统一为 net10.0，故升到 10.0.12，
+:: 与 FastGithub.csproj 已 pin 的 Microsoft.Extensions.Hosting 10.0.12 对齐，避免 6.x/10.x 混装；
+:: 本仓库补丁用的 AddMemoryCache(o => o.SizeLimit = ...) 在 6.x/8.x/10.x 均兼容。
+powershell -NoProfile -Command "$q=[char]34; $old='Microsoft.Extensions.Caching.Memory'+$q+' Version='+$q+'6.0.1'; $new='Microsoft.Extensions.Caching.Memory'+$q+' Version='+$q+'10.0.12'; $p='%SRC%\FastGithub.DomainResolve\FastGithub.DomainResolve.csproj'; $c=Get-Content -Raw $p; $c=$c.Replace($old,$new); $c | Set-Content $p -Encoding utf8; $r=Get-Content -Raw $p; if ($r.Contains($old) -or ($r.Contains($new) -eq $false)) { Write-Error 'Caching.Memory 未成功升到 10.0.12'; exit 1 }"
+if errorlevel 1 goto :fail
+echo   [OK] 已将 Microsoft.Extensions.Caching.Memory 6.0.1 升到 10.0.12
 
 echo [2g] 注入服务注册补丁（证书缓存加容量上限 + 淘汰时 Dispose）
 :: 上游 ServiceCollectionExtensions.cs 的 AddReverseProxy() 用 .AddMemoryCache() 无 SizeLimit，
@@ -229,6 +248,15 @@ echo [2ab] 注入 TLS 入侵中间件补丁（裸 catch{} 改为记 Debug）
 :: 上游 IsTlsConnectionAsync 的裸 catch 会静默吞掉一切异常，真出问题无从排查；
 :: 改为 catch 后记一条 Debug（返回语义不变，仍按“非 tls”处理）。
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\TlsMiddlewares\TlsInvadeMiddleware.cs" "%SRC%\FastGithub.HttpServer\TlsMiddlewares\TlsInvadeMiddleware.cs"
+if errorlevel 1 goto :fail
+
+echo [2ae] 注入配置绑定防裁剪补丁（FastGithubOptions.DomainConfigs 标注 DynamicallyAccessedMembers）
+:: PublishTrimmed 会裁掉「仅被反射访问」的成员，而 ConfigurationBinder 是纯反射绑定：DomainConfig/
+:: ResponseConfig 为 record + init-only 属性，setter 被裁后绑定器静默保留默认值（键在、值全丢，
+:: Response/Destination/TlsIgnoreNameMismatch/TlsSni 失效且不抛异常）。本步在 DomainConfigs 属性上
+:: 显式要求保留其泛型实参 DomainConfig 的所有成员，与 [2m] Startup.cs 的 [DynamicDependency]、
+:: [2h] Directory.Build.props 的 TrimmerRootAssembly(FastGithub.Configuration) 互为多保险。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.Configuration\FastGithubOptions.cs" "%SRC%\FastGithub.Configuration\FastGithubOptions.cs"
 if errorlevel 1 goto :fail
 
 echo [3/6] 注入加速配置（HuggingFace 镜像；GitHub collector 片段已在 [2w] 覆盖）

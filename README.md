@@ -274,6 +274,13 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 注意：`hf-mirror.com` 是**上游镜像、本身不被拦截加速**；我们加速的是 `huggingface.co`，靠重定向借道镜像提速。
 - 另需注意：`*.huggingface.co` 配了 `TlsIgnoreNameMismatch: true`（重定向到 `hf-mirror.com` 所必需），该项的**域名校验实际是关闭的**。这是沿用上游 `google.json` 等片段的既有模式，并非本工具新增的风险类型，但值得知情。
 
+**配置绑定自检（验证 Response / Destination / TlsIgnoreNameMismatch 是否真正生效）**
+- 命令行执行 `curl -k --resolve abc.fastgithub.com:443:127.0.0.1 https://abc.fastgithub.com/ -i`：
+  - 应返回 `HTTP/1.1 404`（对应 `appsettings.json` 里上游自带的示范条目 `*.fastgithub.com → Response:404`）。
+  - 若返回 `502`，说明 `Response` 配置值没有绑定成功（发布期 trimming 裁掉了配置类型的属性 setter），所有依赖 `Response`/`Destination`/`TlsIgnoreNameMismatch` 的配置都会静默失效，需排查。
+- `collector.github.com` 应返回 `204` 而非 `502`（`appsettings.github.json` 里已配置 `Response:204`，用于消除埋点请求的 502 刷屏）。
+- `avatars.githubusercontent.com` 头像应正常加载（依赖 `TlsIgnoreNameMismatch:true` 生效放行）。
+
 **不影响其他流量（关键，仅性能 / 拦截层面）**
 - 同时开着游戏 / 视频 / 其它网站，网络照常——不匹配的域名不被 WinDivert 拦截。
 - 若其它软件也变慢/断流：说明 WinDivert 过滤表达式或驱动异常，需排查（正常情况不应发生）。

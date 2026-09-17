@@ -17,4 +17,16 @@
 		<DebugType>none</DebugType>
 		<DebugSymbols>false</DebugSymbols>
 	</PropertyGroup>
+
+	<!-- [PATCH] 防 trimming 静默丢值：PublishTrimmed 会裁掉「仅被反射访问」的成员，而 ConfigurationBinder
+	     是纯反射绑定（DomainConfig / ResponseConfig 均为 record + init-only 属性，其 setter 只会被绑定器引用）。
+	     裁掉后绑定器找不到可写属性，会静默保留 C# 默认值——字典键照常建立（DNS 劫持正常），但
+	     Response / Destination / TlsIgnoreNameMismatch / TlsSni 全部失效且不抛异常。
+	     把配置程序集整体 root（保留其中所有类型与成员），与 Startup.ConfigureServices 的 [DynamicDependency]、
+	     FastGithubOptions.DomainConfigs 上的 [DynamicallyAccessedMembers] 互为多保险。
+	     程序集名 FastGithub.Configuration 来自上游 FastGithub.Configuration.csproj（其未显式设置 AssemblyName，
+	     故程序集名 = 项目名）。 -->
+	<ItemGroup>
+		<TrimmerRootAssembly Include="FastGithub.Configuration" />
+	</ItemGroup>
 </Project>

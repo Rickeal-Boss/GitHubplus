@@ -85,6 +85,14 @@ namespace FastGithub.HttpServer.Certs
                 }
                 this.logger.LogWarning("本地 CA 证书已过期或即将过期（剩余有效期不足 30 天），将重新生成；请重新启动加速以信任新的 CA 证书。");
             }
+            else
+            {
+                // [PATCH] 原实现的「文件缺失」分支完全静默：任何误删 / 清理 / 杀软隔离 cacert 的场景
+                // 都会在零日志线索下把 CA 换成新的（并写入系统信任库）。不使用 Windows 信任库的客户端
+                //（如 http.sslBackend=openssl 的 git、手工 pin 过本机 CA 的工具）会突然全线 TLS 失败却无从排查。
+                // 这里补一条 Warning，让「CA 被换新」这件事在日志里可见。
+                this.logger.LogWarning("未找到本地 CA 证书文件（可能被清理、移动或杀软隔离），将重新生成；请重新启动加速以信任新的 CA 证书。");
+            }
 
             File.Delete(this.CaCerFilePath);
             File.Delete(this.CaKeyFilePath);
@@ -102,6 +110,13 @@ namespace FastGithub.HttpServer.Certs
 
             var certPem = this.caCert.ExportCertificatePem();
             File.WriteAllText(this.CaCerFilePath, new string(certPem), Encoding.ASCII);
+
+            // [PATCH] 记录新 CA 的指纹与有效期：便于把「系统信任库里的证书」与「磁盘上的证书」对齐核对，
+            // 用于定位「CA 被静默换新后，旧证书客户端全线失败」这类问题。
+            this.logger.LogWarning(
+                "已生成本地 CA 证书（Subject={Subject}，指纹={Thumbprint}，有效期 {NotBefore:O} ~ {NotAfter:O}）：证书 {Cer}，私钥 {Key}。",
+                subjectName.Name, this.caCert.Thumbprint, this.caCert.NotBefore, this.caCert.NotAfter,
+                this.CaCerFilePath, this.CaKeyFilePath);
 
             return true;
         }
@@ -230,17 +245,20 @@ namespace FastGithub.HttpServer.Certs
         /// <returns>是否执行成功</returns>
         private static bool RunGitConfig(string arguments)
         {
-            // [PATCH] 按名字启动 git 存在程序目录劫持风险：UseShellExecute=false 时
-            // CreateProcess 的搜索顺序是「应用程序目录 → 当前目录 → System32 → PATH」，
-            // 第一项指向程序目录（通常解压在用户可写位置，而本程序以管理员运行）。
-            // 用 cmd.exe 绝对路径启动：cmd 自身在 System32（消除第一项劫持），
-            // 且 cmd 内部用 PATH 搜索 git（不查应用程序目录）。
+            // [PATCH] 按名字启动 git 存在程序目录劫持风险：UseShellExecute=false 时，
+            // CreateProcess 对无路径命令的搜索顺序是「应用程序目录 → 当前目录 → System32 → PATH」。
+            // 引擎 Program.Main 会把 CWD 设为 exe 所在目录（通常解压在用户可写位置，而本程序以管理员运行），
+            // 若按名字启动 git，会在「当前目录」这一步命中程序目录里被投放的 git.exe。
+            // 这里双保险：cmd.exe 用绝对路径（消掉「应用程序目录」= exe 目录这一项），
+            // 再把 WorkingDirectory 设为 SystemDirectory（消掉「当前目录」= exe 目录这一项），
+            // 使 git 只可能从 System32 / Windows 系统目录 / PATH 中被找到，不再查用户可写目录。
             try
             {
                 using var process = Process.Start(new ProcessStartInfo
                 {
                     FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
                     Arguments = $"/c git config --global {arguments}",
+                    WorkingDirectory = Environment.SystemDirectory,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 });
@@ -273,6 +291,7 @@ namespace FastGithub.HttpServer.Certs
                 {
                     FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
                     Arguments = $"/c git config --global --get {key}",
+                    WorkingDirectory = Environment.SystemDirectory,
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     CreateNoWindow = true

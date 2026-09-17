@@ -481,6 +481,168 @@ jobs:
           fi
           echo "  已确认 TLS 入侵中间件异常已记 Debug（不再裸 catch 静默吞掉）"
 
+          # [2ac] Yarp.ReverseProxy 高危依赖已升级（GHSA-jrjw-qgr2-wfcg / CVE-2023-33141）
+          F30="src/FastGithub.HttpServer/FastGithub.HttpServer.csproj"
+          if [ ! -f "$F30" ]; then
+            echo "::error::[2ac] 补丁未生效：$F30 不存在"
+            exit 1
+          fi
+          if ! grep -q 'Include="Yarp.ReverseProxy" Version="1.1.2"' "$F30"; then
+            echo "::error::[2ac] 补丁未生效：Yarp.ReverseProxy 未升到已修复的 1.1.2（GHSA-jrjw-qgr2-wfcg）"
+            exit 1
+          fi
+          if grep -q 'Include="Yarp.ReverseProxy" Version="1.1.1"' "$F30"; then
+            echo "::error::[2ac] 补丁未生效：Yarp.ReverseProxy 仍为受影响的 1.1.1"
+            exit 1
+          fi
+          echo "  已确认 Yarp.ReverseProxy 已升到 1.1.2（修复 GHSA-jrjw-qgr2-wfcg）"
+
+          # [2ad] Microsoft.Extensions.Caching.Memory 高危依赖已升级（GHSA-qj66-m88j-hmgj / CVE-2024-43483）
+          F31="src/FastGithub.DomainResolve/FastGithub.DomainResolve.csproj"
+          if [ ! -f "$F31" ]; then
+            echo "::error::[2ad] 补丁未生效：$F31 不存在"
+            exit 1
+          fi
+          if ! grep -q 'Include="Microsoft.Extensions.Caching.Memory" Version="10.0.12"' "$F31"; then
+            echo "::error::[2ad] 补丁未生效：Caching.Memory 未升到已修复的 10.0.12（GHSA-qj66-m88j-hmgj）"
+            exit 1
+          fi
+          if grep -q 'Include="Microsoft.Extensions.Caching.Memory" Version="6.0.1"' "$F31"; then
+            echo "::error::[2ad] 补丁未生效：Caching.Memory 仍为受影响的 6.0.1"
+            exit 1
+          fi
+          echo "  已确认 Microsoft.Extensions.Caching.Memory 已升到 10.0.12（修复 GHSA-qj66-m88j-hmgj）"
+
+          # [P0] 防 trimming 静默丢值：DomainConfig / ResponseConfig 的值绑定走 ConfigurationBinder 反射路径，
+          #      在 PublishTrimmed 下属性 setter 会被裁掉，绑定器随后静默保留默认值（键在、值全丢）。
+          F32="src/FastGithub/Startup.cs"
+          if [ ! -f "$F32" ]; then
+            echo "::error::[2m] 补丁未生效：$F32 不存在"
+            exit 1
+          fi
+          if ! grep -q "typeof(DomainConfig)" "$F32"; then
+            echo "::error::[P0] Startup.cs 未标注 typeof(DomainConfig)，trimming 会裁掉其属性 setter 导致值绑定静默失效"
+            exit 1
+          fi
+          if ! grep -q "typeof(ResponseConfig)" "$F32"; then
+            echo "::error::[P0] Startup.cs 未标注 typeof(ResponseConfig)，trimming 会裁掉其属性 setter 导致 Response 绑定静默失效"
+            exit 1
+          fi
+          if ! grep -q "typeof(FastGithubOptions)" "$F32"; then
+            echo "::error::[P0] Startup.cs 未标注 typeof(FastGithubOptions)"
+            exit 1
+          fi
+          if ! grep -q "CheckConfigurationBinding" "$F32"; then
+            echo "::error::[P0] Startup.cs 缺少配置绑定自检 CheckConfigurationBinding（静默失效将不可观测）"
+            exit 1
+          fi
+          echo "  已确认 Startup.cs 已对配置类型做 [DynamicDependency] 标注并含绑定自检"
+
+          # [P0] 防 trimming：把配置程序集整体 root
+          F33="src/Directory.Build.props"
+          if [ ! -f "$F33" ]; then
+            echo "::error::[2h] 补丁未生效：$F33 不存在"
+            exit 1
+          fi
+          if ! grep -q 'TrimmerRootAssembly Include="FastGithub.Configuration"' "$F33"; then
+            echo "::error::[P0] Directory.Build.props 未 root FastGithub.Configuration 程序集（trimming 会裁掉配置类型 setter）"
+            exit 1
+          fi
+          echo "  已确认 Directory.Build.props 已 TrimmerRootAssembly FastGithub.Configuration"
+
+          # [P0] 防 trimming：DomainConfigs 属性显式标注 DynamicallyAccessedMembers
+          F34="src/FastGithub.Configuration/FastGithubOptions.cs"
+          if [ ! -f "$F34" ]; then
+            echo "::error::[2ae] 补丁未生效：$F34 不存在"
+            exit 1
+          fi
+          if ! grep -q "DynamicallyAccessedMembers" "$F34"; then
+            echo "::error::[P0] FastGithubOptions.DomainConfigs 未标注 [DynamicallyAccessedMembers]"
+            exit 1
+          fi
+          echo "  已确认 FastGithubOptions.DomainConfigs 已标注 [DynamicallyAccessedMembers]"
+
+          # [P0] 启动期绑定自检已接入 Program.cs
+          F35="src/FastGithub/Program.cs"
+          if [ ! -f "$F35" ]; then
+            echo "::error::[2s] 补丁未生效：$F35 不存在"
+            exit 1
+          fi
+          if ! grep -q "CheckConfigurationBinding" "$F35"; then
+            echo "::error::[P0] Program.cs 未调用 CheckConfigurationBinding，启动期绑定自检未生效"
+            exit 1
+          fi
+          echo "  已确认 Program.cs 已在启动期调用配置绑定自检"
+
+          # [2j] DomainResolver：地址列表比较改为顺序无关（消除 DNS 轮转造成的伪变更与日志噪声）
+          F36="src/FastGithub.DomainResolve/DomainResolver.cs"
+          if [ ! -f "$F36" ]; then
+            echo "::error::[2j] 补丁未生效：$F36 不存在"
+            exit 1
+          fi
+          if ! grep -q "IsSameAddressSet" "$F36"; then
+            echo "::error::[2j] 补丁未生效：DomainResolver 未改用顺序无关的地址比较（IsSameAddressSet）"
+            exit 1
+          fi
+          if grep -q "oldSegmentums.SequenceEqual(newSegmentums)" "$F36"; then
+            echo "::error::[2j] 补丁未生效：仍在用顺序敏感的 SequenceEqual 比较地址列表"
+            exit 1
+          fi
+          echo "  已确认 DomainResolver 的地址列表比较已改为顺序无关"
+
+          # [2u] FlowChart：HttpClient 提升为类级 static（不再随方法退出 Dispose，全进程复用）
+          F37="src/FastGithub.UI/FlowChart.xaml.cs"
+          if [ ! -f "$F37" ]; then
+            echo "::error::[2u] 补丁未生效：$F37 不存在"
+            exit 1
+          fi
+          if ! grep -q "private static readonly HttpClient httpClient" "$F37"; then
+            echo "::error::[2u] 补丁未生效：FlowChart 未使用类级 static HttpClient"
+            exit 1
+          fi
+          if grep -q "using var httpClient = new HttpClient();" "$F37"; then
+            echo "::error::[2u] 补丁未生效：FlowChart 仍在方法体内新建 HttpClient"
+            exit 1
+          fi
+          if ! grep -q "this.IsVisible == false" "$F37"; then
+            echo "::error::[2u] 补丁未生效：FlowChart 可见性门控丢失（会退化为每秒轮询 /flowStatistics）"
+            exit 1
+          fi
+          echo "  已确认 FlowChart 使用类级 static HttpClient 且保留可见性门控"
+
+          F38="src/FastGithub.HttpServer/Certs/CertService.cs"
+          if [ ! -f "$F38" ]; then
+            echo "::error::[2d] 补丁未生效：$F38 不存在"
+            exit 1
+          fi
+          if ! grep -q "WorkingDirectory = Environment.SystemDirectory" "$F38"; then
+            echo "::error::[2d] 补丁未生效：git 调用未设置 WorkingDirectory=SystemDirectory（程序目录可投放 git.exe 劫持管理员进程）"
+            exit 1
+          fi
+          echo "  已确认 git 调用设置 WorkingDirectory=SystemDirectory 防程序目录劫持"
+
+          F39="src/FastGithub.UI/AcceleratorPanel.xaml.cs"
+          if [ ! -f "$F39" ]; then
+            echo "::error::[2c] 补丁未生效：$F39 不存在"
+            exit 1
+          fi
+          if ! grep -q "GetFullPath(BackgroundDir)" "$F39"; then
+            echo "::error::[2c] 补丁未生效：背景图加载未校验路径必须位于 ui-background/ 目录内（可加载任意文件）"
+            exit 1
+          fi
+          echo "  已确认背景图加载限定在 ui-background/ 目录内"
+
+          F40="src/FastGithub.UI/Program.cs"
+          if [ ! -f "$F40" ]; then
+            echo "::error::[2c] 补丁未生效：$F40 不存在"
+            exit 1
+          fi
+          if ! grep -q "DispatcherUnhandledException" "$F40"; then
+            echo "::error::[2c] 补丁未生效：UI 未处理异常崩溃时未兜底停引擎（引擎+锚点会残留）"
+            exit 1
+          fi
+          echo "  已确认 UI 崩溃兜底停引擎"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1

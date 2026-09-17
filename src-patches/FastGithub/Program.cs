@@ -11,6 +11,9 @@ namespace FastGithub
         /// <summary>
         /// WinDivert.dll 的 SHA256 基线。
         /// [PATCH] 采集日期 2026-09-17，取自本机实际运行后 WindivertDotnet 释放的文件。
+        /// ⚠ 升级 WindivertDotnet 包版本时，必须同步更新这两个基线（否则每次启动都会误判
+        /// 为「不符」而删除后重新释放，虽能自愈但会刷告警）。升级后先在真机跑一次、取实际
+        /// 释放文件的 SHA256 替换此处。
         /// </summary>
         private const string WINDIVERT_DLL_SHA256 = "C1E060EE19444A259B2162F8AF0F3FE8C4428A1C6F694DCE20DE194AC8D7D9A2";
 
@@ -55,6 +58,9 @@ namespace FastGithub
             builder.ConfigureServices();
 
             var app = builder.Build();
+            // [PATCH] 启动期配置绑定自检：把「PublishTrimmed 裁掉配置类型 setter -> 属性值静默丢失」变成 LogError，
+            // 否则 Response / Destination / TlsIgnoreNameMismatch / TlsSni 失效时无任何日志线索。
+            app.CheckConfigurationBinding();
             app.ConfigureApp();
             return app;
         }

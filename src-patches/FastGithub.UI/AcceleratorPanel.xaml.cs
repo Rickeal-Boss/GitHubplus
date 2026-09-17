@@ -638,9 +638,16 @@ namespace FastGithub.UI
                 if (File.Exists(BackgroundCfg))
                 {
                     var p = File.ReadAllText(BackgroundCfg).Trim();
-                    if (File.Exists(p))
+                    // [PATCH] 只加载 ui-background/ 目录内的图片：ui-background.txt 与程序同目录、
+                    // 而程序目录可能被普通用户写入；若直接信任其中的任意路径，攻击者可让管理员进程
+                    // 加载任意文件。这里把配置里的路径解析为绝对路径，并校验其所在目录必须等于
+                    // ui-background/ 目录本身（ChooseBackground_Click 只把图片写到该目录的直接子级）。
+                    var full = Path.GetFullPath(p);
+                    var dir = Path.GetDirectoryName(full);
+                    if (File.Exists(full) &&
+                        string.Equals(dir, Path.GetFullPath(BackgroundDir), StringComparison.OrdinalIgnoreCase))
                     {
-                        ApplyBackground(p);
+                        ApplyBackground(full);
                         return;
                     }
                 }

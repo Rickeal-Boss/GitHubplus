@@ -149,7 +149,11 @@ namespace FastGithub.DomainResolve
 
                 var oldSegmentums = oldAddresses.Take(MAX_IP_COUNT);
                 var newSegmentums = newAddresses.Take(MAX_IP_COUNT);
-                if (oldSegmentums.SequenceEqual(newSegmentums) == false)
+                // [PATCH] 改为顺序无关比较：DNS 常对同一组 IP 做轮转（集合不变、顺序变），
+                // 而 SequenceEqual 是顺序敏感的，会把「仅顺序不同」误判为「地址已变更」，
+                // 于是白白触发一轮地址更新并多刷一条日志（真机日志里的成片噪声即属此类）。
+                // 排序后再比，保持原有「集合/数量有变化才算变更、变更才记日志」的语义不变。
+                if (IsSameAddressSet(oldSegmentums, newSegmentums) == false)
                 {
                     var addressArray = string.Join(", ", newSegmentums.Select(item => item.ToString()));
                     this.logger.LogInformation($"{dnsEndPoint.Host}:{dnsEndPoint.Port}->[{addressArray}]");
@@ -189,6 +193,21 @@ namespace FastGithub.DomainResolve
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// [PATCH] 判断两个地址序列是否表示同一组地址（顺序无关、数量/重复敏感）。
+        /// IPAddress 未实现 IComparable，故按其规范字符串（ToString）做 Ordinal 排序后再逐项比较，
+        /// 从而消除 DNS 轮转导致的「仅顺序不同」误判。
+        /// </summary>
+        /// <param name="x">地址序列</param>
+        /// <param name="y">地址序列</param>
+        /// <returns>表示同一组地址时返回 true</returns>
+        private static bool IsSameAddressSet(IEnumerable<IPAddress> x, IEnumerable<IPAddress> y)
+        {
+            var sortedX = x.OrderBy(item => item.ToString(), StringComparer.Ordinal).ToArray();
+            var sortedY = y.OrderBy(item => item.ToString(), StringComparer.Ordinal).ToArray();
+            return sortedX.SequenceEqual(sortedY);
         }
 
         /// <summary>

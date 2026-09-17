@@ -14,6 +14,12 @@ namespace FastGithub.UI
     /// </summary>
     public partial class FlowChart : UserControl
     {
+        // [PATCH] 长生命周期复用：HttpClient 的设计意图是长期复用（内部维护连接池）。
+        // 原实现把它声明在 InitFlowChartAsync 方法体内（using var，作用域=整个方法生命周期，
+        // 随方法退出才 Dispose）——即每构造一个新控件就新建、并在方法结束时 Dispose 一个客户端。
+        // 改为类级 static：全进程共用一个客户端，循环内只调用，且不再随方法退出而 Dispose。
+        private static readonly HttpClient httpClient = new HttpClient();
+
         private readonly LineSeries readSeries = new LineSeries
         {
             Title = "上行速率",
@@ -54,7 +60,6 @@ namespace FastGithub.UI
 
         private async void InitFlowChartAsync()
         {
-            using var httpClient = new HttpClient();
             while (this.Dispatcher.HasShutdownStarted == false)
             {
                 try

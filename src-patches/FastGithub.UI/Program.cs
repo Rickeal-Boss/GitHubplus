@@ -60,6 +60,12 @@ namespace FastGithub.UI
             var app = new Application();
             app.StartupUri = new Uri(MAIN_WINDOWS, UriKind.Relative);
             app.Exit += (s, e) => DetachEngineOnExit();   // UI 退出时让 fastgithub 自行优雅停机
+            // [PATCH] UI 崩溃兜底：app.Exit 只在正常退出时触发，未处理异常直接崩掉时不会走到它。
+            // 此时 ping 锚点进程（UI 的子进程）不会随 UI 退出而自动终止（Windows 不级联杀子进程），
+            // 引擎会一直误以为父进程还活着而残留占用端口。这里挂两个兜底：先立即强停引擎
+            // （graceful=false 直接杀进程树，避免崩溃场景下再等 5 秒优雅停机），再让异常继续抛出。
+            app.DispatcherUnhandledException += (s, e) => { try { StopEngine(graceful: false); } catch { } };
+            AppDomain.CurrentDomain.UnhandledException += (s, e) => { try { StopEngine(graceful: false); } catch { } };
             app.Run();
         }
 
@@ -174,7 +180,11 @@ namespace FastGithub.UI
                 foreach (var valueName in new[] { "svcVersion", "Version" })
                 {
                     var version = key.GetValue(valueName) as string;
-                    if (string.IsNullOrEmpty(version))
+                    // [PATCH] 用显式判空替代 string.IsNullOrEmpty：本 UI 目标框架 net45，
+                    // 其 mscorlib 的 IsNullOrEmpty 无 [NotNullWhen(false)] 注解，在 Nullable=enable
+                    // 下收不窄 version，会在 version.Split(...) 处报 CS8602。`version is null` 是编译器
+                    // 内置的可识别模式，不依赖注解，能正确收窄。
+                    if (version is null || version.Length == 0)
                     {
                         continue;
                     }
