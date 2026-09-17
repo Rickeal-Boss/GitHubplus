@@ -695,6 +695,18 @@ jobs:
           fi
           echo "  已确认 DomainResolver 已按 IPv4 优先重排（IPv6 仍保留为后备）"
 
+          # [P1] Release 条件的引号必须两侧都有，否则条件恒为 false、Release 下调试符号设置不生效
+          F44="src/Directory.Build.props"
+          if [ ! -f "$F44" ]; then
+            echo "::error::[P1] 补丁未生效：$F44 不存在"
+            exit 1
+          fi
+          if ! grep -qF "Condition=\"'\$(Configuration)'=='Release'\"" "$F44"; then
+            echo "::error::[P1] Directory.Build.props 的 Release 条件缺少单引号（条件恒 false，Release 下 DebugType/DebugSymbols 不生效，构建中间产物会带调试符号）"
+            exit 1
+          fi
+          echo "  已确认 Release 条件带引号（Release 下不再产出调试符号）"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1
@@ -710,6 +722,17 @@ jobs:
             exit 1
           fi
           echo "  已确认发布包中无预置 CA 目录"
+
+          F45="dist/fastgithub_win-x64"
+          if [ ! -d "$F45" ]; then
+            echo "::error::[P1] 发布目录不存在：$F45"
+            exit 1
+          fi
+          if [ -n "$(find "$F45" -name '*.pdb' -print -quit)" ]; then
+            echo "::error::[P1] 发布包中检出调试符号文件（*.pdb），Release 条件未生效"
+            exit 1
+          fi
+          echo "  已确认发布包中无调试符号文件（*.pdb）"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

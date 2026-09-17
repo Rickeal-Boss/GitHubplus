@@ -21,7 +21,12 @@
 		<EnableConfigurationBindingGenerator>false</EnableConfigurationBindingGenerator>
 	</PropertyGroup>
 
-	<PropertyGroup Condition="$(Configuration)=='Release'">
+	<!-- [PATCH] 条件两侧必须都带单引号：MSBuild 先展开属性再解析条件，
+	     写成 $(Configuration)=='Release' 时左侧裸词 Release 会被当作未定义属性求值为空字符串，
+	     条件恒为 false —— Release 下 DebugType=none / DebugSymbols=false 全部不生效，
+	     构建中间产物（bin / obj / dist）会带出 pdb；最终发布包由 build-portable.cmd 用
+	     copy /Y 选择性组装，本身不会含 pdb（pre16 发布包实测 22 个条目、无 pdb）。 -->
+	<PropertyGroup Condition="'$(Configuration)'=='Release'">
 		<DebugType>none</DebugType>
 		<DebugSymbols>false</DebugSymbols>
 	</PropertyGroup>

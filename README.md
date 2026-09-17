@@ -244,6 +244,8 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 > ⚠ **WinDivert 驱动副本落在 `%APPDATA%`（用户可写目录），且加载前不校验完整性。** 同机任意用户态程序若改写该 `.sys`，在你下次「以管理员身份运行」时会被加载为**内核驱动**。建议把程序解压到受控目录（如 `D:\Tools\`，而非 Downloads / 桌面），以获得更严格的 ACL 保护。
 
 > ⚠ **服务模式存在两处静默错位**：以 SYSTEM 身份运行 `fastgithub.exe start` 时，`git config --global` 写的是 SYSTEM 的 profile（对真实用户无效）、注册表代理设置写的是 `.DEFAULT` hive（同样无效）。也就是「让 git 信任本机 CA」与「代理绕过」在服务模式下**不生效**。本工具推荐桌面模式使用。
+>
+> ⚠ **服务模式还有目录白名单限制**：安装 Windows 服务要求程序位于 `Program Files`（或 `Program Files (x86)`）——这是安全白名单，避免在用户可写目录里以 `LocalSystem` 加载可被替换的 exe。便携版解压在其它目录（如 Downloads / 桌面）时，`fastgithub.exe start` 会直接失败并提示，**属预期行为**；桌面模式（直接运行 `FastGithub.UI.exe`）不受此限制。
 
 > **窗口按钮语义**：点「×」= 收起窗口到托盘（引擎继续运行）；点「—」= 正常最小化到任务栏；真正退出请用托盘右键「退出应用」。本仓库已修正上游「最小化与关闭都只 `Hide()`、两者表现完全一致」的行为。
 

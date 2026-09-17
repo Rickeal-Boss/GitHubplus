@@ -115,14 +115,16 @@ namespace FastGithub.DomainResolve
 
                     candidates.Add(address);
 
-                    // 提前终止按 IPv4 计数而非总数：DNS 常先返回 AAAA，按总数截断会在拿到纯 IPv6
-                    // 名单时就收工；改按 IPv4 计数可保证 IPv4 满员，并避免为凑满总数而白白等待
-                    // 后续 DNS 服务器（每个最多 4 秒）。
+                    // 提前终止：IPv4 满员即停，或候选总数达到 MAX_IP_COUNT × 2 封顶即停。
+                    // 只按 IPv4 计数会在「首个 DNS 服务器返回的以 AAAA 为主」时永不满足，从而把
+                    // 后续每个 DNS 服务器都轮询一遍（单个约 4 秒，冷解析最坏从约 4 秒升到约 20 秒）；
+                    // 总数封顶用来兜住这种情形，不改动最终名单的构成规则。
                     // 已知取舍：DNS 返回 ≥3 条 A 记录时 IPv6 不会进入候选，若这批 IPv4 又全部不可达
                     // 则没有 IPv6 兜底。这与修复前的配额语义一致（IPv4 满 3 条时 IPv6 同样进不了
                     // 最终名单），不构成回归。放宽收集上限的做法会取消提前终止、每次解析都要走完
                     // FallbackDns，伤害最热路径，留待后续评估。
-                    if (candidates.Count(item => item.AddressFamily == AddressFamily.InterNetwork) >= MAX_IP_COUNT)
+                    var ipv4Count = candidates.Count(item => item.AddressFamily == AddressFamily.InterNetwork);
+                    if (ipv4Count >= MAX_IP_COUNT || candidates.Count >= MAX_IP_COUNT * 2)
                     {
                         break;
                     }
