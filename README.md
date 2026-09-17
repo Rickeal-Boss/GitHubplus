@@ -277,7 +277,7 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 **配置绑定自检（验证 Response / Destination / TlsIgnoreNameMismatch 是否真正生效）**
 - 命令行执行 `curl -k --resolve abc.fastgithub.com:443:127.0.0.1 https://abc.fastgithub.com/ -i`：
   - 应返回 `HTTP/1.1 404`（对应 `appsettings.json` 里上游自带的示范条目 `*.fastgithub.com → Response:404`）。
-  - 若返回 `502`，说明 `Response` 配置值没有绑定成功（发布期 trimming 裁掉了配置类型的属性 setter），所有依赖 `Response`/`Destination`/`TlsIgnoreNameMismatch` 的配置都会静默失效，需排查。
+  - 若返回 `502`，说明 `Response` 配置值没有绑定成功（net10+PublishTrimmed 默认启用的配置绑定源生成器不支持 record 的 init-only 属性，会静默跳过赋值；需确认 `Directory.Build.props` 已设置 `EnableConfigurationBindingGenerator=false`），所有依赖 `Response`/`Destination`/`TlsIgnoreNameMismatch` 的配置都会静默失效，需排查。
 - `collector.github.com` 应返回 `204` 而非 `502`（`appsettings.github.json` 里已配置 `Response:204`，用于消除埋点请求的 502 刷屏）。
 - `avatars.githubusercontent.com` 头像应正常加载（依赖 `TlsIgnoreNameMismatch:true` 生效放行）。
 

@@ -513,19 +513,20 @@ jobs:
           fi
           echo "  已确认 Microsoft.Extensions.Caching.Memory 已升到 10.0.12（修复 GHSA-qj66-m88j-hmgj）"
 
-          # [P0] 防 trimming 静默丢值：DomainConfig / ResponseConfig 的值绑定走 ConfigurationBinder 反射路径，
-          #      在 PublishTrimmed 下属性 setter 会被裁掉，绑定器随后静默保留默认值（键在、值全丢）。
+          # [P0] 防配置绑定静默丢值：配置绑定源生成器（net10+PublishTrimmed 默认启用）不支持 record 的
+          #      init-only 属性，会静默跳过赋值（键在、值全丢）；已禁用生成器回退反射绑定，
+          #      [DynamicDependency] 与 TrimmerRootAssembly 是反射绑定路径下保留成员的兜底。
           F32="src/FastGithub/Startup.cs"
           if [ ! -f "$F32" ]; then
             echo "::error::[2m] 补丁未生效：$F32 不存在"
             exit 1
           fi
           if ! grep -q "typeof(DomainConfig)" "$F32"; then
-            echo "::error::[P0] Startup.cs 未标注 typeof(DomainConfig)，trimming 会裁掉其属性 setter 导致值绑定静默失效"
+            echo "::error::[P0] Startup.cs 未标注 typeof(DomainConfig)，反射绑定路径将失去成员保留兜底导致值绑定静默失效"
             exit 1
           fi
           if ! grep -q "typeof(ResponseConfig)" "$F32"; then
-            echo "::error::[P0] Startup.cs 未标注 typeof(ResponseConfig)，trimming 会裁掉其属性 setter 导致 Response 绑定静默失效"
+            echo "::error::[P0] Startup.cs 未标注 typeof(ResponseConfig)，反射绑定路径将失去成员保留兜底导致 Response 绑定静默失效"
             exit 1
           fi
           if ! grep -q "typeof(FastGithubOptions)" "$F32"; then
@@ -545,7 +546,7 @@ jobs:
             exit 1
           fi
           if ! grep -q 'TrimmerRootAssembly Include="FastGithub.Configuration"' "$F33"; then
-            echo "::error::[P0] Directory.Build.props 未 root FastGithub.Configuration 程序集（trimming 会裁掉配置类型 setter）"
+            echo "::error::[P0] Directory.Build.props 未 root FastGithub.Configuration 程序集（反射绑定路径需要这些成员，配置绑定源生成器已禁用）"
             exit 1
           fi
           echo "  已确认 Directory.Build.props 已 TrimmerRootAssembly FastGithub.Configuration"
@@ -642,6 +643,21 @@ jobs:
             exit 1
           fi
           echo "  已确认 UI 崩溃兜底停引擎"
+
+          F41="src/Directory.Build.props"
+          if [ ! -f "$F41" ]; then
+            echo "::error::[2h] 补丁未生效：$F41 不存在"
+            exit 1
+          fi
+          if ! grep -q '<EnableConfigurationBindingGenerator>false</EnableConfigurationBindingGenerator>' "$F41"; then
+            echo "::error::[P0] Directory.Build.props 未禁用配置绑定源生成器（record init-only 属性会被静默跳过绑定）"
+            exit 1
+          fi
+          if ! grep -q 'TrimmerRootAssembly Include="fastgithub"' "$F41"; then
+            echo "::error::[P0] Directory.Build.props 未 root fastgithub 主程序集（AppOptions 反射绑定成员可能被裁）"
+            exit 1
+          fi
+          echo "  已确认配置绑定源生成器已禁用且 fastgithub 程序集已 root（反射绑定恢复）"
 
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"

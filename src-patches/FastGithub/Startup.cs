@@ -105,14 +105,15 @@ namespace FastGithub
         /// 配置服务
         /// </summary>
         /// <param name="builder"></param>
-        // [PATCH] 防 trimming 静默丢值：PublishTrimmed（build-portable.cmd）会裁掉「仅被反射访问」的成员，
-        // 而 ConfigurationBinder 恰恰是纯反射绑定。DomainConfig / ResponseConfig 都是 record + init-only 属性，
-        // 其属性 setter 只被绑定器引用，会被裁剪；绑定器随后找不到可写属性，「静默」保留 C# 默认值——
-        // 字典键仍能建立（DNS 劫持照常），但 Response / Destination / TlsIgnoreNameMismatch / TlsSni
-        // 全部失效且不抛任何异常（真机 pre12 已复现：collector.github.com 的 Response=204 与 avatars 全线 502）。
-        // 原实现只标注了【字典类型本身】，未覆盖【值类型 DomainConfig】及其【嵌套值类型 ResponseConfig】。
-        // 这里把值类型与选项类型一并 root；同时 Directory.Build.props 用 TrimmerRootAssembly 把整个
-        // FastGithub.Configuration 程序集 root（互为双保险），启动期再用 CheckConfigurationBinding 自检。
+        // [PATCH] 防配置绑定静默丢值：net10 + PublishTrimmed 会让 SDK 自动启用「配置绑定源生成器」
+        // （EnableConfigurationBindingGenerator 默认随 PublishTrimmed 打开），该生成器把
+        // services.Configure<T>(...) 调用点替换为编译期生成的绑定代码，但不支持 record 的 init-only 属性
+        // （DomainConfig / ResponseConfig 即是），会静默跳过全部属性赋值——字典键照常建立（DNS 劫持照常），
+        // 但 Response / Destination / TlsIgnoreNameMismatch / TlsSni 全部退化为 C# 默认值且不抛任何异常
+        // （真机 pre12/pre13 已复现：collector.github.com 的 Response=204 与 avatars 全线 502）。
+        // 已在 Directory.Build.props 显式禁用生成器、回退反射绑定；本处 [DynamicDependency] 与
+        // Directory.Build.props 的 TrimmerRootAssembly（FastGithub.Configuration / fastgithub）是
+        // 反射绑定路径下保留成员的兜底，启动期再用 CheckConfigurationBinding 自检。
         [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(Dictionary<string, DomainConfig>))]
         [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DomainConfig))]
         [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ResponseConfig))]
@@ -161,9 +162,10 @@ namespace FastGithub
 
         /// <summary>
         /// [PATCH] 配置绑定自检：把「静默失效」变成启动期 LogError。
-        /// PublishTrimmed 裁掉配置类型的属性 setter 时，ConfigurationBinder 不会抛异常，只会安静地保留
+        /// 配置绑定源生成器（net10+PublishTrimmed 默认启用）不支持 record 的 init-only 属性、静默跳过赋值时
+        /// （即使反射绑定所需的成员已被裁掉同理），ConfigurationBinder 不会抛异常，只会安静地保留
         /// C# 默认值，导致 Response / Destination / TlsIgnoreNameMismatch / TlsSni 等核心功能失效却
-        /// 无任何日志线索（真机 pre12 的 Response=204 失效与 avatars 全线 502 即由此而来）。
+        /// 无任何日志线索（真机 pre12/pre13 的 Response=204 失效与 avatars 全线 502 即由此而来）。
         /// 这里在启动时把「JSON 中已声明」与「运行时绑定值」逐一比对，任何一项未生效即 LogError。
         /// 自检本身失败绝不阻断启动。
         /// </summary>
@@ -248,8 +250,9 @@ namespace FastGithub
                 var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(Startup));
                 logger.LogError(
                     "配置绑定自检失败：以下域名配置在 JSON 中已声明，但未绑定到运行时对象，相关功能会静默失效。\n" +
-                    "最可能原因：PublishTrimmed 裁剪掉了配置类型的属性 setter（DomainConfig / ResponseConfig）。\n" +
-                    "请确认 src-patches/Directory.Build.props 中的 TrimmerRootAssembly（FastGithub.Configuration）" +
+                    "最可能原因：配置绑定源生成器（net10+PublishTrimmed 默认启用）不支持 record 的 init-only 属性，静默跳过赋值。\n" +
+                    "请确认 src-patches/Directory.Build.props 中已设置 EnableConfigurationBindingGenerator=false，\n" +
+                    "且 TrimmerRootAssembly（FastGithub.Configuration / fastgithub）" +
                     "与 Startup.ConfigureServices 上的 [DynamicDependency] 标注仍存在。\n失败项：{Dropped}",
                     string.Join("；", dropped));
             }

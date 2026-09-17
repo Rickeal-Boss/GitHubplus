@@ -10,7 +10,15 @@
 		<!-- [PATCH] net10 默认 JsonSerializerIsReflectionEnabledByDefault=false（source generation 模式），
 		     导致上游 HttpReverseProxyMiddleware.HandleErrorAsync 用匿名类型做 WriteAsJsonAsync
 		     时抛 NotSupportedException。启用反射模式恢复兼容（trim 仍生效，只放开 JSON 反射）。 -->
-		<JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>	
+		<JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+		<!-- [PATCH] net10 + PublishTrimmed 会让 SDK 自动启用「配置绑定源生成器」（EnableConfigurationBindingGenerator
+		     默认随 PublishTrimmed 打开）。该生成器把 services.Configure<T>(...) 调用点替换为编译期生成的绑定代码，
+		     但不支持 record 的 init-only 属性（DomainConfig / ResponseConfig 即是），会静默跳过全部属性赋值——
+		     字典键照常建立，TlsIgnoreNameMismatch / TlsSni / Response / Destination 全部退化为 C# 默认值
+		     （真机 pre12/pre13 复现：collector.github.com 的 Response=204 失效、*.githubusercontent.com 502）。
+		     这里显式禁用生成器，回退运行时反射绑定（反射可写 init-only 属性）。
+		     反射路径依赖的配置类型成员由下方 TrimmerRootAssembly 兜底保留。 -->
+		<EnableConfigurationBindingGenerator>false</EnableConfigurationBindingGenerator>
 	</PropertyGroup>
 
 	<PropertyGroup Condition="$(Configuration)=='Release'">
@@ -18,15 +26,20 @@
 		<DebugSymbols>false</DebugSymbols>
 	</PropertyGroup>
 
-	<!-- [PATCH] 防 trimming 静默丢值：PublishTrimmed 会裁掉「仅被反射访问」的成员，而 ConfigurationBinder
-	     是纯反射绑定（DomainConfig / ResponseConfig 均为 record + init-only 属性，其 setter 只会被绑定器引用）。
-	     裁掉后绑定器找不到可写属性，会静默保留 C# 默认值——字典键照常建立（DNS 劫持正常），但
-	     Response / Destination / TlsIgnoreNameMismatch / TlsSni 全部失效且不抛异常。
+	<!-- [PATCH] 防 trimming 静默丢值：PublishTrimmed 会裁掉「仅被反射访问」的配置类型成员（反射绑定需要它们），
+	     而 ConfigurationBinder 恰恰依赖这些可写成员（DomainConfig / ResponseConfig 均为 record + init-only 属性，
+	     其 setter 只会被绑定器引用）。裁掉后绑定器找不到可写属性，会静默保留 C# 默认值——字典键照常建立
+	     （DNS 劫持正常），但 Response / Destination / TlsIgnoreNameMismatch / TlsSni 全部失效且不抛异常。
 	     把配置程序集整体 root（保留其中所有类型与成员），与 Startup.ConfigureServices 的 [DynamicDependency]、
 	     FastGithubOptions.DomainConfigs 上的 [DynamicallyAccessedMembers] 互为多保险。
 	     程序集名 FastGithub.Configuration 来自上游 FastGithub.Configuration.csproj（其未显式设置 AssemblyName，
 	     故程序集名 = 项目名）。 -->
+	<!-- [PATCH] 上述绑定生成器已显式禁用，Configure<T> 回退运行时反射绑定。其中 Configure<AppOptions>
+	     的 AppOptions 位于 fastgithub 主程序集，仅被反射访问的成员同样可能被 trimmer 裁掉，故把
+	     主程序集也 root 兜底（主程序集代码几乎全部静态可达，root 代价极小）。
+	     程序集名小写 fastgithub 来自部署 DLL 实测。 -->
 	<ItemGroup>
 		<TrimmerRootAssembly Include="FastGithub.Configuration" />
+		<TrimmerRootAssembly Include="fastgithub" />
 	</ItemGroup>
 </Project>
