@@ -10,7 +10,7 @@
 
 | 需求 | 实现 | 来源 |
 |---|---|---|
-| GitHub 主站加速（核心） | `TlsSni:false` SNI 伪装 + IP 优选 | `appsettings.github.json`（FastGithub 原生，保留） |
+| GitHub 主站加速（核心） | `TlsSni:false` SNI 伪装 + IP 优选 | **`src-patches/FastGithub/appsettings/appsettings.github.json`（本工具补丁，含 `collector.github.com` 直返 204）** |
 | HuggingFace 加速 | 镜像重定向 `Destination: https://hf-mirror.com` | **`appsettings.huggingface.json`（本工具新增）** |
 | 不影响其他流量（性能 / 拦截层面） | WinDivert 包层按域名作用域拦截，不匹配走 `next()`；**不改系统代理开关与代理服务器，但会往代理绕过列表 `ProxyOverride` 追加加速域名**（见 7.3） | FastGithub 原生 |
 | 信任层面：勾选 = 授权解密 | 勾选清单即**实际被本地 CA 解密**的范围；而 CA 本身的签发能力覆盖**所有域名**。详见第 7 节 | 本工具如实说明（上游既有行为） |
@@ -49,7 +49,7 @@
 
 | 文件 | 作用 | 处置 |
 |---|---|---|
-| `appsettings.github.json` | GitHub 主站域名配置（核心） | **保留**（FastGithub 原生，本目录仅作参考副本） |
+| `src-patches/FastGithub/appsettings/appsettings.github.json` | GitHub 主站域名配置（核心） | **本工具补丁**（构建时覆盖进克隆源码，含 `collector.github.com` 直返 204 以消除埋点 502 刷屏） |
 | `appsettings.huggingface.json` | HuggingFace 镜像重定向配置 | **新增**（本工具核心改动） |
 | `build-portable.cmd` | Windows 免安装包一键构建脚本 | **新增** |
 | `src-patches/FastGithub.UI/` | UI 增强补丁：`Program.cs`（进程启停）、`MainWindow.xaml`（新增「加速」标签）、`AcceleratorPanel.xaml(.cs)`（加速控制面板） | **新增**（构建时覆盖进克隆源码，不改 FastGithub 核心） |
@@ -59,7 +59,7 @@
 | `src-patches/FastGithub.HttpServer/ServiceCollectionExtensions.cs` | 证书缓存加 `SizeLimit=4096` 上限 + 淘汰时 `Dispose`，避免大量不同子域导致 `X509Certificate2` 句柄无界增长 | **新增**（构建时覆盖进克隆源码） |
 | `src-patches/Directory.Build.props` | `TargetFramework` 由 `net7.0`（2024-05 EOL）迁移到 `net10.0` LTS（EOL 2028-11），self-contained 发布不再内嵌无补丁运行时 | **新增**（构建时覆盖进克隆源码） |
 
-> 把 `appsettings.*.json` 放进 FastGithub 仓库的 `FastGithub/appsettings/` 目录即可（与 `appsettings.github.json` 同级）。
+> 把 `appsettings.*.json` 片段放进 FastGithub 仓库的 `FastGithub/appsettings/` 目录即可生效（该目录下的 `appsettings.*.json` 会被自动加载）。
 
 ---
 
@@ -71,7 +71,7 @@
 # 前置：安装 .NET 10 SDK（FastGithub 目标框架 net10.0 + RuntimeIdentifier win-x64）
 #       https://dotnet.microsoft.com/download
 #
-# 把 build-portable.cmd 与 appsettings.huggingface.json / appsettings.github.json 放同一目录，双击运行：
+# 把 build-portable.cmd 与 appsettings.huggingface.json 放同一目录，双击运行：
 build-portable.cmd
 ```
 
@@ -80,7 +80,7 @@ build-portable.cmd
 2. **按已审计的固定 commit 精确拉取** FastGithub（含 `@dnscrypt-proxy` 目录，**非子模块**，无需 `--recurse-submodules`）。不再 `git clone --depth 1` 追最新代码——当前 pin 在 `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（见脚本顶部 `UPSTREAM_COMMIT`），升级需显式改这一行。
 3. **改写托盘「检测更新」链接**为本仓库 `Rickeal-Boss/GitHubplus`（`MainWindow.xaml.cs` 的 `RELEASES_URI`）。
 4. **注入 UI 增强补丁**：把 `src-patches/FastGithub.UI/` 下的 `Program.cs`、`MainWindow.xaml`、`AcceleratorPanel.xaml(.cs)` 覆盖进 `FastGithub.UI/`，新增「加速」标签页与加速控制面板（启停开关 + 网址勾选 + HF 模式切换）。**不改 FastGithub 核心代码**。
-5. **仅注入新增的 `appsettings.huggingface.json`** 到 `FastGithub/appsettings/`。GitHub 主站配置为仓库原生 `appsettings.github.json`，**不覆盖**（避免上游更新后被旧副本回退）。
+5. **注入配置片段**：新增的 `appsettings.huggingface.json` 直接拷入 `FastGithub/appsettings/`；GitHub 主站片段同样由 `src-patches/FastGithub/appsettings/appsettings.github.json` 补丁覆盖（含 `collector.github.com` 直返 204）。上游 commit 已 pin，不再存在「上游更新后被旧副本回退」的风险。
 6. 两步发布（先 UI 再核心单文件，`--self-contained` + `PublishTrimmed` + `PublishSingleFile`）→ 自带运行时、免安装。
 7. **修正 dnscrypt-proxy 目录命名**：代码期望 `dnscrypt-proxy/`，但仓库目录是 `@dnscrypt-proxy/`，脚本把 `win-x64/dnscrypt-proxy.exe` + `dnscrypt-proxy.toml` 拷成 `dnscrypt-proxy/`，否则 DNS 防污染会静默失效（降级到 FallbackDns，仍可加速）。
 8. **防御 WinDivert 原生库**：单文件下 `WinDivert64.sys`/`WinDivert.dll` 可能只在 `runtimes/win-x64/native/`，脚本将其补到 exe 同级（驱动必须挨着 `WinDivert.dll` 才能加载）。
@@ -99,7 +99,7 @@ build-portable.cmd
 # UPSTREAM_COMMIT 精确拉取，而不是 --depth 1 追最新代码。
 git clone --depth 1 https://github.com/creazyboyone/FastGithub.git src
 git -C src checkout f5425ec6750463f64f6b01d15d8010e0b53f94c4
-Copy-Item appsettings.huggingface.json src\FastGithub\appsettings\   # 仅注入新增配置；github 配置为仓库原生
+Copy-Item appsettings.huggingface.json src\FastGithub\appsettings\   # 仅注入 huggingface 片段（github 片段由 src-patches 补丁覆盖）
 dotnet publish -c Release -o dist\fastgithub_win-x64 src\FastGithub.UI\FastGithub.UI.csproj
 dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --self-contained -r win-x64 -o dist\fastgithub_win-x64 src\FastGithub\FastGithub.csproj
 # 然后执行脚本里的第 4、5 步（dnscrypt 改名 + WinDivert 防御拷贝）
@@ -301,7 +301,7 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyon
 
 ## 12. 一句话总结
 
-> 自建 = `git clone` FastGithub + 把 `appsettings.huggingface.json`（及原生 `appsettings.github.json`）放进 `FastGithub/appsettings/` + 运行 `build-portable.cmd` 出 Trimmed 自包含免安装包。
+> 自建 = `git clone` FastGithub + 把 `appsettings.huggingface.json` 放进 `FastGithub/appsettings/`（GitHub 主站片段由 `src-patches` 补丁覆盖）+ 运行 `build-portable.cmd` 出 Trimmed 自包含免安装包。
 > 加速内核、MITM、本地 CA、DNS 优选、WinDivert 拦截**全部复用**，真正需要写的"代码"就那一个 JSON 文件。
 
 ---

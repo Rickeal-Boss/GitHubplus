@@ -86,15 +86,109 @@ namespace FastGithub.UI
         private static void SetWebBrowserVersion()
         {
             const string subKey = @"Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION";
+
+            // [PATCH] OpenSubKey / CreateSubKey 的返回值都可能为 null（权限不足、被组策略锁定），
+            // 原实现未判空即 SetValue，会抛 NullReferenceException 中断 UI 启动；
+            // 且两者都返回需要释放的 RegistryKey，原实现未放进 using。
+            // 这里统一放进 using 管理生命周期，取不到时跳过并记 Warning，不影响主流程。
+            using var registryKey = OpenOrCreateSubKey(subKey);
+            if (registryKey == null)
+            {
+                Trace.TraceWarning($"无法打开或创建注册表项 {subKey}，跳过浏览器版本模拟值写入。");
+                return;
+            }
+
+            var name = $"{Process.GetCurrentProcess().ProcessName}.exe";
+
+            // [PATCH] 原实现 new 一个 System.Windows.Forms.WebBrowser 只为读它的 Version.Major，
+            // 会实例化一个真正的 IE 内核控件：开销大、强依赖 IE 组件，在无 IE 的精简系统上
+            // 可能挂起甚至抛异常。改为直接读注册表里的 IE 版本号（svcVersion 优先，其次 Version；
+            // 64 位视图与 WOW6432Node 视图都查），读不到时回退到 IE11 的默认值 11000，
+            // 绝不再实例化 WebBrowser 控件。
+            var value = GetIEBrowserEmulationValue();
+            registryKey.SetValue(name, value, RegistryValueKind.DWord);
+        }
+
+        /// <summary>
+        /// [PATCH] 以可写方式打开注册表子键；不存在则创建。
+        /// 返回 null 表示既打不开也建不出（权限不足 / 被组策略锁定），由调用方判定是否跳过。
+        /// 返回的 RegistryKey 需由调用方用 using 管理生命周期。
+        /// </summary>
+        private static RegistryKey? OpenOrCreateSubKey(string subKey)
+        {
             var registryKey = Registry.CurrentUser.OpenSubKey(subKey, true);
             if (registryKey == null)
             {
                 registryKey = Registry.CurrentUser.CreateSubKey(subKey);
             }
-            var name = $"{Process.GetCurrentProcess().ProcessName}.exe";
-            using var webBrowser = new System.Windows.Forms.WebBrowser();
-            var value = int.Parse($"{webBrowser.Version.Major}000");
-            registryKey.SetValue(name, value, RegistryValueKind.DWord);
+            return registryKey;
+        }
+
+        /// <summary>
+        /// [PATCH] 计算 FEATURE_BROWSER_EMULATION 需要的值（IE 主版本号 × 1000）。
+        /// 取不到版本号时回退到 IE11 对应的 11000，保证主流程不因读取失败而中断。
+        /// </summary>
+        private static int GetIEBrowserEmulationValue()
+        {
+            var major = GetIEVersionMajorFromRegistry();
+            return major > 0 ? major * 1000 : 11000;
+        }
+
+        /// <summary>
+        /// [PATCH] 从注册表读取 IE 主版本号。HKLM 与 HKCU、64 位视图与 WOW6432Node 视图依次尝试；
+        /// 读不到返回 0。
+        /// </summary>
+        private static int GetIEVersionMajorFromRegistry()
+        {
+            const string ieSubKey = @"SOFTWARE\Microsoft\Internet Explorer";
+            const string ieSubKeyWow = @"SOFTWARE\WOW6432Node\Microsoft\Internet Explorer";
+
+            var hives = new[] { Registry.LocalMachine, Registry.CurrentUser };
+            var subKeys = new[] { ieSubKey, ieSubKeyWow };
+            foreach (var hive in hives)
+            {
+                foreach (var subKey in subKeys)
+                {
+                    var major = TryReadIEVersionMajor(hive, subKey);
+                    if (major > 0)
+                    {
+                        return major;
+                    }
+                }
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// [PATCH] 在指定注册表位置读取 IE 主版本号：svcVersion 优先，其次 Version。
+        /// </summary>
+        private static int TryReadIEVersionMajor(RegistryKey hive, string subKey)
+        {
+            try
+            {
+                using var key = hive.OpenSubKey(subKey);
+                if (key == null)
+                {
+                    return 0;
+                }
+                foreach (var valueName in new[] { "svcVersion", "Version" })
+                {
+                    var version = key.GetValue(valueName) as string;
+                    if (string.IsNullOrEmpty(version))
+                    {
+                        continue;
+                    }
+                    if (int.TryParse(version.Split('.')[0], out var major) && major > 0)
+                    {
+                        return major;
+                    }
+                }
+            }
+            catch
+            {
+                // 忽略单点读取失败，交由上层继续尝试其它位置
+            }
+            return 0;
         }
 
         /// <summary>
@@ -103,11 +197,16 @@ namespace FastGithub.UI
         private static void SetWebBrowserDPI()
         {
             const string subKey = @"Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_96DPI_PIXEL";
-            var registryKey = Registry.CurrentUser.OpenSubKey(subKey, true);
+
+            // [PATCH] 同 SetWebBrowserVersion：OpenSubKey / CreateSubKey 可能返回 null，
+            // 统一用 using 管理并判空，取不到时跳过并记 Warning，避免 NullReferenceException 中断启动。
+            using var registryKey = OpenOrCreateSubKey(subKey);
             if (registryKey == null)
             {
-                registryKey = Registry.CurrentUser.CreateSubKey(subKey);
+                Trace.TraceWarning($"无法打开或创建注册表项 {subKey}，跳过浏览器 DPI 模拟值写入。");
+                return;
             }
+
             var name = $"{Process.GetCurrentProcess().ProcessName}.exe";
             registryKey.SetValue(name, 1, RegistryValueKind.DWord);
         }
@@ -214,21 +313,77 @@ namespace FastGithub.UI
                     {
                         if (process.HasExited == false && process.WaitForExit(5000) == false)
                         {
-                            process.Kill();   // 超时兜底：强杀
+                            KillProcessTree(process);   // 超时兜底：强杀整棵进程树
                         }
                     }
                     catch
                     {
-                        try { process.Kill(); } catch { }
+                        KillProcessTree(process);
                     }
                 }
                 else
                 {
-                    try { if (process.HasExited == false) process.Kill(); } catch { }
+                    KillProcessTree(process);
                 }
 
                 try { process.Dispose(); } catch { }
                 TryDisposeAnchor();
+            }
+        }
+
+        /// <summary>
+        /// [PATCH] 强杀引擎进程及其整棵子进程树（fastgithub.exe 派生的 dnscrypt-proxy 等）。
+        /// 本 UI 目标框架为 net45，Process.Kill(bool entireProcessTree) 不可用；
+        /// 故用系统目录（Environment.SystemDirectory）拼 taskkill.exe 绝对路径执行 /F /T /PID，
+        /// 与本文件 ping.exe 的绝对路径化保持一致，避免被程序目录投放的同名文件劫持。
+        /// 先 taskkill：返回码非 0 或抛异常时，退回原 process.Kill()，保证兜底仍然有效。
+        /// </summary>
+        private static void KillProcessTree(Process process)
+        {
+            if (process == null)
+            {
+                return;
+            }
+
+            var killedByTaskkill = false;
+            try
+            {
+                if (process.HasExited)
+                {
+                    return;   // 已退出，无需再杀
+                }
+
+                var taskkillPath = Path.Combine(Environment.SystemDirectory, "taskkill.exe");
+                var psi = new ProcessStartInfo
+                {
+                    FileName = taskkillPath,
+                    Arguments = $"/F /T /PID {process.Id}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using var taskkill = Process.Start(psi);
+                if (taskkill != null)
+                {
+                    // 先读空输出再等待退出，避免管道缓冲写满使 taskkill 阻塞
+                    try { taskkill.StandardOutput.ReadToEnd(); } catch { }
+                    try { taskkill.StandardError.ReadToEnd(); } catch { }
+                    taskkill.WaitForExit(5000);
+                    killedByTaskkill = taskkill.HasExited && taskkill.ExitCode == 0;
+                }
+            }
+            catch
+            {
+                killedByTaskkill = false;
+            }
+
+            if (killedByTaskkill == false)
+            {
+                // 退回原兜底：直接强杀进程本身（不含子进程）
+                try { process.Kill(); } catch { }
             }
         }
 

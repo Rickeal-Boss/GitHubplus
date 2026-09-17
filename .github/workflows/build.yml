@@ -129,6 +129,358 @@ jobs:
           fi
           echo "  已确认 CA 与叶子证书的 EKU 已收窄（移除 tlsClientOid）"
 
+          # [2j] 域名解析补丁：负缓存 + 下发 IP 数量截断
+          F6="src/FastGithub.DomainResolve/DomainResolver.cs"
+          if [ ! -f "$F6" ]; then
+            echo "::error::[2j] 补丁未生效：$F6 不存在（负缓存与 IP 截断缺失）"
+            exit 1
+          fi
+          if ! grep -q "NEGATIVE_CACHE_MILLISECONDS" "$F6"; then
+            echo "::error::[2j] 补丁未生效：DomainResolver.cs 不含负缓存 NEGATIVE_CACHE_MILLISECONDS"
+            exit 1
+          fi
+          if ! grep -q "Take(MAX_IP_COUNT)" "$F6"; then
+            echo "::error::[2j] 补丁未生效：DomainResolver.cs 未把下发 IP 截断为 MAX_IP_COUNT"
+            exit 1
+          fi
+          echo "  已确认域名解析补丁生效（全失败负缓存 30s + IP 数量截断）"
+
+          # [2k] 测速周期补丁：1s -> 15s
+          F7="src/FastGithub.DomainResolve/DomainResolveHostedService.cs"
+          if [ ! -f "$F7" ]; then
+            echo "::error::[2k] 补丁未生效：$F7 不存在（测速周期仍为 1 秒）"
+            exit 1
+          fi
+          if grep -q "FromSeconds(1d)" "$F7"; then
+            echo "::error::[2k] 补丁未生效：测速周期仍为 1 秒"
+            exit 1
+          fi
+          if ! grep -q "FromSeconds(15d)" "$F7"; then
+            echo "::error::[2k] 补丁未生效：测速周期未放宽到 15 秒"
+            exit 1
+          fi
+          echo "  已确认后台测速周期已放宽到 15 秒"
+
+          # [2l] 拨测并发补丁：并发上限 + 整轮串行化
+          F8="src/FastGithub.DomainResolve/IPAddressService.cs"
+          if [ ! -f "$F8" ]; then
+            echo "::error::[2l] 补丁未生效：$F8 不存在（并发拨测无上限）"
+            exit 1
+          fi
+          if ! grep -q "SemaphoreSlim" "$F8"; then
+            echo "::error::[2l] 补丁未生效：IPAddressService.cs 不含 SemaphoreSlim 并发闸门"
+            exit 1
+          fi
+          echo "  已确认拨测并发已加上限（SemaphoreSlim）"
+
+          # [2m] 日志容量补丁：单文件大小上限 + 保留数量上限
+          F9="src/FastGithub/Startup.cs"
+          if [ ! -f "$F9" ]; then
+            echo "::error::[2m] 补丁未生效：$F9 不存在（日志文件无容量上限）"
+            exit 1
+          fi
+          if ! grep -q "rollOnFileSizeLimit" "$F9"; then
+            echo "::error::[2m] 补丁未生效：Startup.cs 未配置 rollOnFileSizeLimit"
+            exit 1
+          fi
+          if ! grep -q "retainedFileCountLimit" "$F9"; then
+            echo "::error::[2m] 补丁未生效：Startup.cs 未配置 retainedFileCountLimit"
+            exit 1
+          fi
+          echo "  已确认日志文件容量与保留数量已限制"
+
+          # [2n] FallbackDns 补丁：不得再含国内不可达的 8.8.8.8
+          F10="src/FastGithub/appsettings.json"
+          if [ ! -f "$F10" ]; then
+            echo "::error::[2n] 补丁未生效：$F10 不存在"
+            exit 1
+          fi
+          if grep -q "8.8.8.8" "$F10"; then
+            echo "::error::[2n] 补丁未生效：appsettings.json 仍含国内不可达的 8.8.8.8"
+            exit 1
+          fi
+          if ! grep -q "223.5.5.5" "$F10"; then
+            echo "::error::[2n] 补丁未生效：appsettings.json 缺少 223.5.5.5"
+            exit 1
+          fi
+          echo "  已确认 FallbackDns 已移除 8.8.8.8 并补入 223.5.5.5"
+
+          # [2o] 端口占用检测补丁：保留监听的 Address
+          F11="src/FastGithub.Configuration/GlobalListener.cs"
+          if [ ! -f "$F11" ]; then
+            echo "::error::[2o] 补丁未生效：$F11 不存在（回环443仍会被其它网卡IP占用误判）"
+            exit 1
+          fi
+          if ! grep -q "IPAddress.IPv6Loopback" "$F11"; then
+            echo "::error::[2o] 补丁未生效：GlobalListener.cs 未按地址过滤监听项"
+            exit 1
+          fi
+          echo "  已确认端口占用检测已保留监听地址"
+
+          # [2p] CA 删除补丁：精确匹配 + 自签名，且不得再用子串匹配
+          F12="src/FastGithub.HttpServer/Certs/CaCertInstallers/CaCertInstallerOfWindows.cs"
+          if [ ! -f "$F12" ]; then
+            echo "::error::[2p] 补丁未生效：$F12 不存在"
+            exit 1
+          fi
+          if ! grep -q "IssuerName.Name" "$F12"; then
+            echo "::error::[2p] 补丁未生效：未按自签名条件做精确匹配"
+            exit 1
+          fi
+          if grep -q "FindBySubjectName" "$F12"; then
+            echo "::error::[2p] 补丁未生效：仍在使用子串匹配的 FindBySubjectName（会误删第三方根证书）"
+            exit 1
+          fi
+          echo "  已确认 CA 删除已改为精确匹配 + 自签名判定"
+
+          # [2q]/[2aa] 服务镜像路径补丁（H-3 起：黑名单 -> 白名单，判定下沉到 ServiceInstallUtil）
+          F13="src/FastGithub/ServiceExtensions.cs"
+          if [ ! -f "$F13" ]; then
+            echo "::error::[2q] 补丁未生效：$F13 不存在"
+            exit 1
+          fi
+          if ! grep -q "Path.GetFullPath" "$F13"; then
+            echo "::error::[2q] 补丁未生效：Windows 分支未使用 Path.GetFullPath"
+            exit 1
+          fi
+          if ! grep -q "IsAllowedServiceBinaryPath" "$F13"; then
+            echo "::error::[2q] 补丁未生效：调用侧未委托白名单校验 IsAllowedServiceBinaryPath"
+            exit 1
+          fi
+          if grep -q "UserProfile" "$F13"; then
+            echo "::error::[2q] 补丁未生效：仍残留黑名单（UserProfile）逻辑，未改为白名单"
+            exit 1
+          fi
+          echo "  已确认服务镜像路径已规范化并改走白名单校验（黑名单已移除）"
+
+          # [2r] TLS 白名单补丁
+          F14="src/FastGithub.HttpServer/KestrelServerExtensions.cs"
+          if [ ! -f "$F14" ]; then
+            echo "::error::[2r] 补丁未生效：$F14 不存在"
+            exit 1
+          fi
+          if ! grep -q "IsMatch" "$F14"; then
+            echo "::error::[2r] 补丁未生效：TLS 层未做域名白名单校验"
+            exit 1
+          fi
+          if ! grep -q "IPAddress.TryParse" "$F14"; then
+            echo "::error::[2r] 补丁未生效：未放行 IP 字面量/无点主机名（会打断 localhost 直连）"
+            exit 1
+          fi
+          echo "  已确认 TLS 层已按白名单校验 SNI（并放行本机地址直连）"
+
+          # [2s] WinDivert 文件自愈补丁
+          F15="src/FastGithub/Program.cs"
+          if [ ! -f "$F15" ]; then
+            echo "::error::[2s] 补丁未生效：$F15 不存在"
+            exit 1
+          fi
+          if ! grep -q "C1E060EE19444A259B2162F8AF0F3FE8C4428A1C6F694DCE20DE194AC8D7D9A2" "$F15"; then
+            echo "::error::[2s] 补丁未生效：缺少 WinDivert.dll 的 SHA256 基线"
+            exit 1
+          fi
+          echo "  已确认 WinDivert 驱动文件已加入哈希自愈校验"
+
+          # [2m] 热重载必须关闭（程序可能解压在用户可写目录）
+          F16="src/FastGithub/Startup.cs"
+          if [ ! -f "$F16" ]; then
+            echo "::error::[2m] 补丁未生效：$F16 不存在"
+            exit 1
+          fi
+          if ! grep -q "AddJsonFile(jsonFile, true, false)" "$F16"; then
+            echo "::error::[2m] 补丁未生效：appsettings 仍开启 reloadOnChange 热重载"
+            exit 1
+          fi
+          echo "  已确认 appsettings 热重载已关闭"
+
+          # [2t] ProxyOverride 回滚补丁
+          F17="src/FastGithub.PacketIntercept/Dns/ProxyConflictSolver.cs"
+          if [ ! -f "$F17" ]; then
+            echo "::error::[2t] 补丁未生效：$F17 不存在"
+            exit 1
+          fi
+          if ! grep -q "PROXYOVERRIDE_OWNED_KEY" "$F17"; then
+            echo "::error::[2t] 补丁未生效：没有自己的条目记录键，取消勾选仍会残留"
+            exit 1
+          fi
+          if ! grep -q "DeleteOwnedProxyOvride" "$F17"; then
+            echo "::error::[2t] 补丁未生效：恢复时未清空自己的条目记录"
+            exit 1
+          fi
+          if grep -q "\.Except(" "$F17"; then
+            echo "::error::[2t] 补丁未生效：仍在用 Except(DomainConfigs.Keys) 做移除（取消勾选会残留）"
+            exit 1
+          fi
+          echo "  已确认 ProxyOverride 已改为按自己的记录精确回滚"
+
+          # [2u] 流量图可见性门控
+          F18="src/FastGithub.UI/FlowChart.xaml.cs"
+          if [ ! -f "$F18" ]; then
+            echo "::error::[2u] 补丁未生效：$F18 不存在"
+            exit 1
+          fi
+          if ! grep -q "IsVisible" "$F18"; then
+            echo "::error::[2u] 补丁未生效：流量图未按可见性门控（不可见仍在轮询）"
+            exit 1
+          fi
+          echo "  已确认流量图已按可见性门控"
+
+          # [2v] 请求日志降噪
+          F19="src/FastGithub.HttpServer/HttpMiddlewares/RequestLoggingMilldeware.cs"
+          if [ ! -f "$F19" ]; then
+            echo "::error::[2v] 补丁未生效：$F19 不存在"
+            exit 1
+          fi
+          if ! grep -q "LogDebug" "$F19"; then
+            echo "::error::[2v] 补丁未生效：错误路径未把完整堆栈降级到 Debug"
+            exit 1
+          fi
+          echo "  已确认请求日志错误路径已降噪（完整堆栈降级 Debug）"
+
+          # [2w] GitHub collector 204 片段
+          F20="src/FastGithub/appsettings/appsettings.github.json"
+          if [ ! -f "$F20" ]; then
+            echo "::error::[2w] 补丁未生效：$F20 不存在"
+            exit 1
+          fi
+          if ! grep -q "collector.github.com" "$F20"; then
+            echo "::error::[2w] 补丁未生效：appsettings.github.json 缺少 collector.github.com"
+            exit 1
+          fi
+          if ! grep -q "204" "$F20"; then
+            echo "::error::[2w] 补丁未生效：collector.github.com 未配置 204 响应"
+            exit 1
+          fi
+          echo "  已确认 GitHub collector 片段已生效（collector.github.com -> 204）"
+
+          # [2c] IE 版本改读注册表
+          F21="src/FastGithub.UI/Program.cs"
+          if [ ! -f "$F21" ]; then
+            echo "::error::[2c] 补丁未生效：$F21 不存在"
+            exit 1
+          fi
+          if ! grep -q "svcVersion" "$F21"; then
+            echo "::error::[2c] 补丁未生效：IE 版本未改读注册表 svcVersion"
+            exit 1
+          fi
+          echo "  已确认 IE 版本改由注册表读取（不再实例化 WebBrowser 控件）"
+
+          # [2c] 背景图按显示尺寸解码
+          F22="src/FastGithub.UI/AcceleratorPanel.xaml.cs"
+          if [ ! -f "$F22" ]; then
+            echo "::error::[2c] 补丁未生效：$F22 不存在"
+            exit 1
+          fi
+          if ! grep -q "DecodePixelWidth" "$F22"; then
+            echo "::error::[2c] 补丁未生效：背景图未设置 DecodePixelWidth（按原图全分辨率解码）"
+            exit 1
+          fi
+          echo "  已确认背景图已按显示尺寸解码"
+
+          # [2j] 过滤链路本地地址
+          F23="src/FastGithub.DomainResolve/DomainResolver.cs"
+          if [ ! -f "$F23" ]; then
+            echo "::error::[2j] 补丁未生效：$F23 不存在"
+            exit 1
+          fi
+          if ! grep -q "169.254" "$F23"; then
+            echo "::error::[2j] 补丁未生效：未过滤 IPv4 链路本地 169.254.0.0/16"
+            exit 1
+          fi
+          echo "  已确认已过滤链路本地地址（169.254.0.0/16 与 fe80::/10）"
+
+          # [2x] TomlUtil 原子写
+          F24="src/FastGithub.DomainResolve/TomlUtil.cs"
+          if [ ! -f "$F24" ]; then
+            echo "::error::[2x] 补丁未生效：$F24 不存在"
+            exit 1
+          fi
+          if ! grep -q "File.Move" "$F24"; then
+            echo "::error::[2x] 补丁未生效：TomlUtil 未使用原子替换写文件"
+            exit 1
+          fi
+          echo "  已确认 TomlUtil 已改为原子写（临时文件 + File.Move）"
+
+          # [2y] hosts 纯字节处理 + 原子替换 + 崩溃自愈（HostsConflictSolver）
+          F25="src/FastGithub.PacketIntercept/Dns/HostsConflictSolver.cs"
+          if [ ! -f "$F25" ]; then
+            echo "::error::[2y] 补丁未生效：$F25 不存在"
+            exit 1
+          fi
+          if ! grep -q "File.ReadAllBytes" "$F25"; then
+            echo "::error::[2y] 补丁未生效：未按字节读取 hosts（File.ReadAllBytes）"
+            exit 1
+          fi
+          if ! grep -q "Registry.LocalMachine" "$F25"; then
+            echo "::error::[2y] 补丁未生效：回滚记录未写入 HKLM（Registry.LocalMachine）"
+            exit 1
+          fi
+          if ! grep -q "File.Replace" "$F25"; then
+            echo "::error::[2y] 补丁未生效：hosts 未使用 File.Replace 原子替换写文件"
+            exit 1
+          fi
+          echo "  已确认 hosts 纯字节处理 + 原子替换 + 崩溃自愈记录已生效"
+
+          # [2z] dnscrypt 路径绝对化 + Job Object（DnscryptProxy）
+          F26="src/FastGithub.DomainResolve/DnscryptProxy.cs"
+          if [ ! -f "$F26" ]; then
+            echo "::error::[2z] 补丁未生效：$F26 不存在"
+            exit 1
+          fi
+          if ! grep -q "Environment.ProcessPath" "$F26"; then
+            echo "::error::[2z] 补丁未生效：dnscrypt 路径未绝对化（无 Environment.ProcessPath）"
+            exit 1
+          fi
+          if ! grep -q "AssignProcessToJobObject" "$F26"; then
+            echo "::error::[2z] 补丁未生效：未把 dnscrypt-proxy 纳入 Job Object"
+            exit 1
+          fi
+          echo "  已确认 dnscrypt 路径绝对化 + Job Object 兜底已生效"
+
+          # [2aa] 服务安装目录白名单（ServiceInstallUtil）
+          F27="src/FastGithub.DomainResolve/ServiceInstallUtil.cs"
+          if [ ! -f "$F27" ]; then
+            echo "::error::[2aa] 补丁未生效：$F27 不存在"
+            exit 1
+          fi
+          if ! grep -q "ProgramFiles" "$F27"; then
+            echo "::error::[2aa] 补丁未生效：白名单未使用 ProgramFiles/ProgramFilesX86"
+            exit 1
+          fi
+          if ! grep -q "IsNullOrEmpty" "$F27"; then
+            echo "::error::[2aa] 补丁未生效：未对白名单候选防空串（StartsWith 空串恒真陷阱）"
+            exit 1
+          fi
+          echo "  已确认服务安装目录已改为白名单校验（防空串陷阱）"
+
+          # [2c] UI 强杀兜底改为杀进程树（J-2）
+          F28="src/FastGithub.UI/Program.cs"
+          if [ ! -f "$F28" ]; then
+            echo "::error::[2c] 补丁未生效：$F28 不存在"
+            exit 1
+          fi
+          if ! grep -q "Environment.SystemDirectory" "$F28"; then
+            echo "::error::[2c] 补丁未生效：强杀兜底未用系统目录定位 taskkill.exe"
+            exit 1
+          fi
+          if ! grep -q "taskkill.exe" "$F28"; then
+            echo "::error::[2c] 补丁未生效：强杀兜底未改为 taskkill 进程树强杀"
+            exit 1
+          fi
+          echo "  已确认 UI 强杀兜底已改为 taskkill /F /T 进程树强杀"
+
+          # [2ab] TLS 入侵中间件裸 catch 记日志（TlsInvadeMiddleware）
+          F29="src/FastGithub.HttpServer/TlsMiddlewares/TlsInvadeMiddleware.cs"
+          if [ ! -f "$F29" ]; then
+            echo "::error::[2ab] 补丁未生效：$F29 不存在"
+            exit 1
+          fi
+          if ! grep -q "LogDebug" "$F29"; then
+            echo "::error::[2ab] 补丁未生效：裸 catch 未改为记 Debug"
+            exit 1
+          fi
+          echo "  已确认 TLS 入侵中间件异常已记 Debug（不再裸 catch 静默吞掉）"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1

@@ -662,6 +662,17 @@ namespace FastGithub.UI
                 bmp.BeginInit();
                 bmp.UriSource = new Uri(path, UriKind.Absolute);
                 bmp.CacheOption = BitmapCacheOption.OnLoad;
+
+                // [PATCH] 按显示尺寸解码背景图。原实现不设 DecodePixelWidth，WPF 会按图片原始
+                // 像素解码——用户选一张 4K / 手机直出大图做背景，就要常驻几十 MB 位图内存，
+                // 而实际只显示到窗口大小。这里按窗口宽度（×当前 DPI 缩放）下采样；
+                // 只设 DecodePixelWidth、不设 DecodePixelHeight，WPF 会保持原始宽高比。
+                var decodeWidth = GetBackgroundDecodeWidth();
+                if (decodeWidth > 0)
+                {
+                    bmp.DecodePixelWidth = decodeWidth;
+                }
+
                 bmp.EndInit();
                 img.Source = bmp;
                 img.Visibility = Visibility.Visible;
@@ -671,6 +682,43 @@ namespace FastGithub.UI
             {
                 BgPathText.Text = "当前：默认背景（图片加载失败）";
                 ReportError("应用界面背景", ex);
+            }
+        }
+
+        /// <summary>
+        /// [PATCH] 计算背景图解码宽度（物理像素）：窗口宽度 × 当前 DPI 缩放。
+        /// 取不到窗口或缩放时回退到一个保守的默认值，避免退回按原图全分辨率解码。
+        /// </summary>
+        private int GetBackgroundDecodeWidth()
+        {
+            try
+            {
+                var win = Window.GetWindow(this);
+                var width = (win != null && win.ActualWidth > 0) ? win.ActualWidth : this.ActualWidth;
+                if (width <= 0)
+                {
+                    return 1920;
+                }
+
+                // 96 DPI 基准下的设备无关单位要换算成物理像素，否则高 DPI 屏会解码得偏小
+                var dpiScale = 1.0;
+                var source = PresentationSource.FromVisual(this);
+                if (source != null && source.CompositionTarget != null)
+                {
+                    dpiScale = source.CompositionTarget.TransformToDevice.M11;
+                }
+                if (dpiScale <= 0)
+                {
+                    dpiScale = 1.0;
+                }
+
+                var pixelWidth = (int)Math.Ceiling(width * dpiScale);
+                // 上限保护：避免异常窗口尺寸 / DPI 造成过大的解码缓冲
+                return Math.Min(Math.Max(pixelWidth, 1), 8192);
+            }
+            catch
+            {
+                return 1920;
             }
         }
 

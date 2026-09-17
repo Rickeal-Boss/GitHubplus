@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -9,6 +10,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
 
 namespace FastGithub.HttpServer.Certs
 {
@@ -33,6 +35,10 @@ namespace FastGithub.HttpServer.Certs
 
         // [PATCH] 保护 caCert 的首次初始化（单例 + 并发 TLS 握手）
         private readonly object caCertLock = new object();
+
+        // [PATCH] 按域名的证书签发闸门：保证同一域名同一时刻只有一个线程在签发证书。
+        // 与 serverCertCache 的生命周期协同：证书被淘汰时同步移除对应闸门，避免无界增长。
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> certGates = new();
 
 
         /// <summary>
@@ -183,7 +189,12 @@ namespace FastGithub.HttpServer.Certs
                 // 避免每次勾选站点重启引擎都重刷用户的既有选择。
                 // 注：Git for Windows 的 http.schannelCheckRevoke 默认值已是 best-effort，
                 //     自签 CA 缺少 CRL 分发点也不会报错，因此无需额外设置。
-                RunGitConfig("http.sslBackend schannel");
+                if (RunGitConfig("http.sslBackend schannel") == false)
+                {
+                    this.logger.LogWarning(
+                        "写入 git 全局配置 http.sslBackend=schannel 失败，git 可能不信任本机 CA，https 操作会失败。" +
+                        "可手动执行 git config --global http.sslBackend schannel 后重试。");
+                }
                 return;
             }
 
@@ -234,7 +245,14 @@ namespace FastGithub.HttpServer.Certs
                     CreateNoWindow = true
                 });
 
-                return process != null && process.WaitForExit(5000);
+                // [PATCH] 原实现只等退出、不看 ExitCode：git 因参数非法等失败时会被当成成功，
+                // 调用方据此掩盖了错误（同文件 RunGitConfigGet 已正确判断退出码）。
+                if (process == null || process.WaitForExit(5000) == false)
+                {
+                    return false;
+                }
+
+                return process.ExitCode == 0;
             }
             catch (Exception)
             {
@@ -303,8 +321,30 @@ namespace FastGithub.HttpServer.Certs
             }
 
             var key = $"{nameof(CertService)}:{domain}";
-            var endCert = this.serverCertCache.GetOrCreate(key, GetOrCreateCert);
-            return endCert!;
+
+            // [PATCH] 无锁快路径：命中缓存直接返回，避免每次 TLS 握手都去取闸门。
+            if (this.serverCertCache.TryGetValue(key, out var cached) && cached is X509Certificate2 cachedCert)
+            {
+                return cachedCert;
+            }
+
+            // [PATCH] 按域名串行签发。IMemoryCache.GetOrCreate 不是原子的：
+            // 并发首次握手会各自进入工厂方法，同一域名被签发多份证书，
+            // 多余的那份被丢弃且从未 Dispose（非托管句柄泄漏），同时白白浪费 CPU。
+            // 注意：Kestrel 在同步回调里调用本方法，取闸门必须用同步阻塞（Wait），
+            // 不能把本方法改成 async（否则会改变返回类型、破坏调用方）。
+            var gate = this.certGates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+            gate.Wait();
+            try
+            {
+                // 闸门内二次检查：可能已有并发线程完成签发并写入缓存，此处会直接命中
+                var endCert = this.serverCertCache.GetOrCreate(key, GetOrCreateCert);
+                return endCert!;
+            }
+            finally
+            {
+                gate.Release();
+            }
 
             // 生成域名的1年证书
             X509Certificate2 GetOrCreateCert(ICacheEntry entry)
@@ -314,13 +354,15 @@ namespace FastGithub.HttpServer.Certs
                 entry.SetAbsoluteExpiration(notAfter);
 
                 // [PATCH] 证书缓存必须有容量计费与淘汰回调：
-                // 1) SetSize(1) 让 AddMemoryCache(SizeLimit=...) 能据此做 LRU 淘汰
-                // 2) X509Certificate2 是非托管句柄，被淘汰时必须 Dispose，否则句柄泄漏。
+                // 1、SetSize 传入 1，让 AddMemoryCache 的 SizeLimit 能据此做 LRU 淘汰；
+                // 2、X509Certificate2 是非托管句柄，被淘汰时必须 Dispose，否则句柄泄漏。
                 //    原实现两项都缺，访问大量不同子域（如 *.cloudfront.net）会无界增长直至 OOM。
                 entry.SetSize(1);
                 entry.RegisterPostEvictionCallback((key, value, reason, state) =>
                 {
                     (value as X509Certificate2)?.Dispose();
+                    // [PATCH] 证书被淘汰时同步清理其签发闸门，避免 certGates 随访问过的域名无界增长
+                    this.certGates.TryRemove(key, out _);
                 });
 
                 var extraDomains = GetExtraDomains();

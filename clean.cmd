@@ -8,6 +8,7 @@ chcp 65001 >nul
 ::       1) 移除本机根证书存储中的 FastGithub CA
 ::       2) 恢复被旧版本改动的 git 全局配置
 ::       3) 从系统代理绕过列表（ProxyOverride）移除被追加的加速域名
+::       3b) 删除本工具写入的浏览器模拟值（HKCU FeatureControl）与 hosts 回滚记录（HKLM\SOFTWARE\FastGithub）
 ::       4) 删除本地 CA 与私钥（cacert/）
 ::       5) 删除运行期日志与界面残留（logs/ ui-error.log ui-background）
 ::       6) 删除 WinDivert 驱动本地副本（%APPDATA%\WindivertDotnet）
@@ -51,8 +52,8 @@ if not errorlevel 1 echo   已结束 dnscrypt-proxy.exe
 ping -n 3 127.0.0.1 >nul
 echo.
 
-echo [1/7] 移除根证书存储中的 FastGithub CA
-powershell -NoProfile -Command "$c = @(Get-ChildItem 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root' -EA SilentlyContinue | Where-Object { $_.Subject -like '*FastGithub*' }); if ($c.Count -gt 0) { $c | ForEach-Object { Remove-Item $_.PSPath -Force -EA SilentlyContinue }; Write-Host ('  已移除 ' + $c.Count + ' 张证书') } else { Write-Host '  未找到 FastGithub 证书' }"
+echo [1/7] 移除根证书存储中的 FastGithub CA（精确匹配 Subject=CN=FastGithub 且自签名，见 CertService.cs 的 new X500DistinguishedName($"CN={nameof(FastGithub)}")）
+powershell -NoProfile -Command "$actualSubject = 'CN=FastGithub'; $c = @(Get-ChildItem 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root' -EA SilentlyContinue | Where-Object { $_.Subject -eq $actualSubject -and $_.Issuer -eq $_.Subject }); if ($c.Count -gt 0) { $c | ForEach-Object { Remove-Item $_.PSPath -Force -EA SilentlyContinue }; Write-Host ('  已移除 ' + $c.Count + ' 张证书') } else { Write-Host '  未找到 FastGithub 证书' }"
 echo.
 
 echo [2/7] 恢复 git 配置
@@ -70,6 +71,20 @@ echo [3/7] 从系统代理绕过列表移除被追加的加速域名
 :: 这里只删除「能在大写小写无关的精确匹配本程序 appsettings 片段里出现过的域名」的条目，
 :: 不碰用户自己配置的任何条目（含 <local>）。
 powershell -NoProfile -Command "$key='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'; $cur=(Get-ItemProperty -Path $key -Name ProxyOverride -EA SilentlyContinue).ProxyOverride; if ([string]::IsNullOrEmpty($cur)) { Write-Host '  未设置 ProxyOverride，无需处理' } else { $files=@(); if (Test-Path 'appsettings') { $files += @(Get-ChildItem 'appsettings' -Filter 'appsettings.*.json' -EA SilentlyContinue) }; if (Test-Path 'appsettings\disabled') { $files += @(Get-ChildItem 'appsettings\disabled' -Filter 'appsettings.*.json' -EA SilentlyContinue) }; if (Test-Path 'appsettings.json') { $files += @(Get-Item 'appsettings.json') }; $pats=@(); foreach($f in $files) { try { $j=Get-Content -Raw $f.FullName | ConvertFrom-Json; if ($j.FastGithub.DomainConfigs) { foreach($n in $j.FastGithub.DomainConfigs.PSObject.Properties.Name) { $pats += $n } } } catch { } }; if ($pats.Count -eq 0) { Write-Host '  未解析到任何域名模式（配置片段可能已被删除），为安全起见不改动注册表'; Write-Host ('  当前 ProxyOverride：' + $cur) } else { $parts=@($cur -split ';' | Where-Object { $_ -ne '' }); $kept=@($parts | Where-Object { $pats -notcontains $_ }); if ($kept.Count -lt $parts.Count) { $new=($kept -join ';'); Set-ItemProperty -Path $key -Name ProxyOverride -Value $new; Write-Host ('  已移除 ' + ($parts.Count - $kept.Count) + ' 条加速域名绕过项（共 ' + $pats.Count + ' 个模式参与匹配）'); Write-Host ('  现值：' + $new); Write-Host '  注：其余条目（含其它工具写入的）保持原样，未做任何改动' } else { Write-Host '  ProxyOverride 中未发现本工具追加的条目（保持原样）' } } }"
+:: 本工具新版会用同一个键下的 FastGithubProxyOverrideOwned 记录自己写入过哪些条目
+:: （用于取消勾选时精确回滚）。卸载时一并删掉，避免留下无意义的残留值。
+powershell -NoProfile -Command "$k='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'; if (Get-ItemProperty -Path $k -Name 'FastGithubProxyOverrideOwned' -EA SilentlyContinue) { Remove-ItemProperty -Path $k -Name 'FastGithubProxyOverrideOwned' -EA SilentlyContinue; Write-Host '  已删除 ProxyOverride 条目记录 FastGithubProxyOverrideOwned' } else { Write-Host '  未找到 ProxyOverride 条目记录（无需处理）' }"
+echo.
+
+echo [3b/7] 删除本工具写入的浏览器模拟值与 hosts 回滚记录
+:: UI 每次运行都会往 HKCU 的 FeatureControl 下写名为 FastGithub.UI.exe 的两个值
+:: （FEATURE_BROWSER_EMULATION 让内置 WebBrowser 用现代 IE 内核、FEATURE_96DPI_PIXEL 关宿主机 DPI 缩放）。
+:: 卸载时删除，避免在用户注册表留残留。只删本程序自己的值（name 精确为 FastGithub.UI.exe），
+:: 不动同键下其它进程/用户写入的条目。
+powershell -NoProfile -Command "$name='FastGithub.UI.exe'; $paths=@('HKCU:\Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION','HKCU:\Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_96DPI_PIXEL'); $n=0; foreach ($p in $paths) { if (Get-ItemProperty -Path $p -Name $name -EA SilentlyContinue) { Remove-ItemProperty -Path $p -Name $name -EA SilentlyContinue; $n++; Write-Host ('  已删除 ' + $name + ' @ ' + $p) } }; if ($n -eq 0) { Write-Host '  未找到本工具写入的浏览器模拟值（无需处理）' }"
+:: 新版 HostsConflictSolver 会在 HKLM\SOFTWARE\FastGithub 记录 hosts 被改写前的原始行段字节（base64），
+:: 供崩溃后自愈恢复。正常退出会自行删除；进程被强杀/崩溃时残留，卸载时一并清理。
+powershell -NoProfile -Command "if (Test-Path 'HKLM:\SOFTWARE\FastGithub') { Remove-Item -Path 'HKLM:\SOFTWARE\FastGithub' -Recurse -Force -EA SilentlyContinue; if (Test-Path 'HKLM:\SOFTWARE\FastGithub') { Write-Host '  [警告] HKLM\SOFTWARE\FastGithub 删除失败（可能被占用）' } else { Write-Host '  已删除 hosts 回滚记录 HKLM\SOFTWARE\FastGithub' } } else { Write-Host '  未找到 hosts 回滚记录（无需处理）' }"
 echo.
 
 echo [4/7] 删除本地 CA 与私钥
@@ -119,9 +134,10 @@ echo.
 
 echo [7/7] 删除可能残留的 Windows 服务并回显残留
 :: 只有执行过 fastgithub.exe start 才会装服务（AUTO_START + LocalSystem，会开机自启）。
-:: 服务不存在时 sc delete 会报错，用 >nul 2>&1 忽略。
+:: 服务不存在时 sc delete 会报错，用 >nul 2>&1 忽略。另外本工具运行时会由 WindivertDotnet 在 SCM 注册名为 WinDivert 的内核驱动服务，卸载时需一并删除。
 sc query fastgithub >nul 2>&1 && (sc stop fastgithub >nul 2>&1 & sc delete fastgithub >nul 2>&1 & echo   已删除服务 fastgithub)
 sc query FastGithub.dnscrypt-proxy >nul 2>&1 && (sc stop FastGithub.dnscrypt-proxy >nul 2>&1 & sc delete FastGithub.dnscrypt-proxy >nul 2>&1 & echo   已删除服务 FastGithub.dnscrypt-proxy)
+sc query WinDivert >nul 2>&1 && (sc stop WinDivert >nul 2>&1 & sc delete WinDivert >nul 2>&1 & echo   已删除内核驱动服务 WinDivert)
 echo.
 echo   --- git 全局配置残留（下面两行有输出即表示仍有遗留）---
 git config --global --get http.sslVerify

@@ -117,7 +117,121 @@ if errorlevel 1 goto :fail
 echo   [OK] 已移除 CA 与叶子证书的 tlsClientOid
 
 
-echo [3/6] 注入加速配置（仅新增 HuggingFace 镜像；GitHub 主站配置为仓库原生，不覆盖）
+echo [2j] 注入域名解析补丁（解析全失败时负缓存 30 秒 + 下发 IP 截断为 MAX_IP_COUNT）
+:: 缓存命中条件是 addresses.Length > 0，而全失败时写入的是空数组 -> 空数组永不命中，
+:: 于是每个请求都重走「DNS 解析 + 竞速 + 串行连接全部候选 IP」（单 IP 超时 10 秒），
+:: 直接放大成重试风暴。故加 30 秒负缓存，并把下发列表截断到 MAX_IP_COUNT 个。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DomainResolver.cs" "%SRC%\FastGithub.DomainResolve\DomainResolver.cs"
+if errorlevel 1 goto :fail
+
+echo [2k] 注入测速周期补丁（后台测速周期 1s -> 15s）
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DomainResolveHostedService.cs" "%SRC%\FastGithub.DomainResolve\DomainResolveHostedService.cs"
+if errorlevel 1 goto :fail
+
+echo [2l] 注入拨测并发补丁（并发拨测上限 8 + 整轮拨测串行化）
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\IPAddressService.cs" "%SRC%\FastGithub.DomainResolve\IPAddressService.cs"
+if errorlevel 1 goto :fail
+
+echo [2m] 注入日志容量补丁（单文件 20MB 滚动 + 最多保留 7 个）
+:: 上游 WriteTo.File 只配了 rollingInterval: Day，没有大小与数量上限
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub\Startup.cs" "%SRC%\FastGithub\Startup.cs"
+if errorlevel 1 goto :fail
+
+echo [2n] 注入 FallbackDns 补丁（去掉国内不可达的 8.8.8.8，补 223.5.5.5）
+:: 8.8.8.8 在国内基本不可达，且数组按序优先 -> 每次 fallback 先吃一轮超时
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub\appsettings.json" "%SRC%\FastGithub\appsettings.json"
+if errorlevel 1 goto :fail
+
+echo [2o] 注入端口占用检测补丁（保留监听的 Address，避免回环 443 被其它网卡 IP 误判为占用）
+:: 原实现只取 endpoint.Port 丢掉 Address：有任何进程监听 0.0.0.0:443 或某网卡IP:443 时，
+:: 回环 443 也被判为占用 -> HttpsPort 漂到 444 -> WinDivert 的 TCP 重定向不区分目的IP，
+:: 会把回环上所有目标 443 的包无差别改写到 444。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.Configuration\GlobalListener.cs" "%SRC%\FastGithub.Configuration\GlobalListener.cs"
+if errorlevel 1 goto :fail
+
+echo [2p] 注入CA删除补丁（FindBySubjectName 子串匹配改为精确匹配+自签名判定）
+:: 子串匹配会对 LocalMachine\Root 里任何主题含 "FastGithub" 的证书执行 store.Remove，
+:: 误删第三方根证书会导致相关站点证书校验全部失败。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\Certs\CaCertInstallers\CaCertInstallerOfWindows.cs" "%SRC%\FastGithub.HttpServer\Certs\CaCertInstallers\CaCertInstallerOfWindows.cs"
+if errorlevel 1 goto :fail
+
+echo [2q] 注入服务镜像路径校验补丁（拒绝在普通用户可写目录安装 SYSTEM 权限服务）
+:: 程序解压在 Downloads/用户目录时，服务镜像指向普通用户可替换的 exe，
+:: 下次开机即以 SYSTEM 权限执行被替换的二进制（本地提权）。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub\ServiceExtensions.cs" "%SRC%\FastGithub\ServiceExtensions.cs"
+if errorlevel 1 goto :fail
+
+echo [2r] 注入TLS白名单补丁（发送了SNI但不在加速白名单内的域名一律中止握手）
+:: 原实现对任意 SNI 都签发解密证书，安全完全依赖 DNS 投毒白名单与 TCP 过滤器两道前置闸门；
+:: 流量一旦绕过闸门进入监听器就是任意域名解密。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\KestrelServerExtensions.cs" "%SRC%\FastGithub.HttpServer\KestrelServerExtensions.cs"
+if errorlevel 1 goto :fail
+
+echo [2s] 注入WinDivert文件自愈补丁（哈希与基线不符即删除，下次运行重新从内嵌资源释放）
+:: WinDivert.dll 无数字签名且位于 %APPDATA%\WindivertDotnet（用户可写），
+:: 被替换后在提权进程内 LoadLibrary 即管理员代码执行；上游释放逻辑是「存在即跳过」，永不复查。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub\Program.cs" "%SRC%\FastGithub\Program.cs"
+if errorlevel 1 goto :fail
+
+echo [2t] 注入ProxyOverride回滚补丁（按自己的记录精确回滚，取消勾选不再残留）
+:: 原实现用 Except(DomainConfigs.Keys) 做移除：用户取消勾选某站点后该域名就不在
+:: DomainConfigs 里了，于是永久留在系统代理绕过列表（真机实测残留 34 条，其中 16 条是 GitHub 条目）。
+:: 新实现用注册表值 FastGithubProxyOverrideOwned 记录自己写入过的条目并按记录精确回滚。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.PacketIntercept\Dns\ProxyConflictSolver.cs" "%SRC%\FastGithub.PacketIntercept\Dns\ProxyConflictSolver.cs"
+if errorlevel 1 goto :fail
+
+echo [2u] 注入流量图补丁（控件不可见时不轮询 /flowStatistics）
+:: MainWindow.xaml 内联构造了 FlowChart 控件，即使从不打开流量页，它也会每秒请求一次
+:: http://localhost/flowStatistics（穿 Kestrel + 各中间件 + JSON 序列化 + 图表重绘，86400 次/天）。
+:: 改为控件不可见时只等待、不发请求，用户切到流量页后立刻恢复刷新。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.UI\FlowChart.xaml.cs" "%SRC%\FastGithub.UI\FlowChart.xaml.cs"
+if errorlevel 1 goto :fail
+
+echo [2v] 注入请求日志补丁（错误路径只记一行，完整堆栈降级到 Debug）
+:: 原实现把整个 AggregateException 展开写进 Error 日志，实测占日志总字节的 59.8%（平均 3639 B/条）。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\HttpMiddlewares\RequestLoggingMilldeware.cs" "%SRC%\FastGithub.HttpServer\HttpMiddlewares\RequestLoggingMilldeware.cs"
+if errorlevel 1 goto :fail
+
+echo [2w] 注入 GitHub collector 片段（collector.github.com 直接返回 204）
+:: AppCenter / VS 遥测会周期性向 collector.github.com 发 POST；改为本地直接 204 空响应，
+:: 既省去解密与转发，也消除无用外联。该片段整体覆盖仓库原生的 appsettings.github.json。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub\appsettings\appsettings.github.json" "%SRC%\FastGithub\appsettings\appsettings.github.json"
+if errorlevel 1 goto :fail
+
+echo [2x] 注入TomlUtil原子写补丁（先写临时文件，再原子替换）
+:: 原实现直接 File.WriteAllTextAsync 覆盖 dnscrypt-proxy.toml：进程在写入中途被终止
+:: （关加速、崩溃、关机）会残留半截配置，下次启动 dnscrypt-proxy 因配置损坏直接失败。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\TomlUtil.cs" "%SRC%\FastGithub.DomainResolve\TomlUtil.cs"
+if errorlevel 1 goto :fail
+
+echo [2y] 注入 hosts 编码保真 + 原子写补丁（HostsConflictSolver）
+:: 上游用 StreamReader 默认解码（UTF-8）读 hosts，中国区 ANSI(GBK) 的 hosts 会被读成乱码再写回 -> 损坏文件；
+:: 且直接 File.WriteAllTextAsync 覆盖，进程中断即残留半截 hosts。现按原始字节判编码（BOM 决定 UTF-8 / ANSI），
+:: 同目录 .tmp + File.Move 原子替换，改前先把回滚记录写进 HKLM\SOFTWARE\FastGithub 供崩溃自愈恢复。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.PacketIntercept\Dns\HostsConflictSolver.cs" "%SRC%\FastGithub.PacketIntercept\Dns\HostsConflictSolver.cs"
+if errorlevel 1 goto :fail
+
+echo [2z] 注入 dnscrypt 路径绝对化 + Job Object 兜底补丁（DnscryptProxy）
+:: 上游用相对路径（依赖 Program.Main 把 CWD 设为 exe 目录），CWD 一变即可被投放同名文件劫持；
+:: 现基于 Environment.ProcessPath 拼绝对路径；并把 dnscrypt-proxy 纳入 KILL_ON_JOB_CLOSE 的 Job Object，
+:: 引擎无论优雅停机/强杀/崩溃都不会遗留孤儿进程；Stop() 补 WaitForExit(3000) 防止端口未释放。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DnscryptProxy.cs" "%SRC%\FastGithub.DomainResolve\DnscryptProxy.cs"
+if errorlevel 1 goto :fail
+
+echo [2aa] 注入服务安装目录白名单补丁（ServiceInstallUtil 下沉校验）
+:: 上游 ServiceExtensions 用黑名单（漏 C:\temp / ProgramData 等用户可写目录），且 dnscrypt 直接调
+:: InstallAndStartService 绕过了该调用侧校验。现改为白名单（仅 Program Files / Program Files (x86)，
+:: 用 SpecialFolder 枚举规避环境变量重定向陷阱），并把判定下沉进 InstallAndStartService 内部。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\ServiceInstallUtil.cs" "%SRC%\FastGithub.DomainResolve\ServiceInstallUtil.cs"
+if errorlevel 1 goto :fail
+
+echo [2ab] 注入 TLS 入侵中间件补丁（裸 catch{} 改为记 Debug）
+:: 上游 IsTlsConnectionAsync 的裸 catch 会静默吞掉一切异常，真出问题无从排查；
+:: 改为 catch 后记一条 Debug（返回语义不变，仍按“非 tls”处理）。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\TlsMiddlewares\TlsInvadeMiddleware.cs" "%SRC%\FastGithub.HttpServer\TlsMiddlewares\TlsInvadeMiddleware.cs"
+if errorlevel 1 goto :fail
+
+echo [3/6] 注入加速配置（HuggingFace 镜像；GitHub collector 片段已在 [2w] 覆盖）
 copy /Y "%SCRIPT_DIR%appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
 
 echo [4/6] 发布（官方两步法：先 UI，再核心单文件，输出到同一目录）
