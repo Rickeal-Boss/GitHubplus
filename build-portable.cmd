@@ -276,6 +276,20 @@ if errorlevel 1 (echo [错误] dnscrypt-proxy.exe 未复制，DNS 防污染将�
 copy /Y "%SRC%\@dnscrypt-proxy\dnscrypt-proxy.toml"        "%PKG%\dnscrypt-proxy\"
 if errorlevel 1 (echo [错误] dnscrypt-proxy.toml 未复制，终止构建 & goto :fail)
 
+echo [5i] dnscrypt 源去自指：摘掉自引用源，删除从未使用的 relays 源段
+:: [PATCH] dnscrypt-proxy 启动时会拉源列表（urls），其中第一项是 raw.githubusercontent.com；
+:: 该域名解析走系统 DNS(udp 53)，而它命中 *.githubusercontent.com 加速配置，会被我们自己的
+:: WinDivert 投毒到 127.0.0.1 —— 于是形成「dnscrypt 拉源 -> 本机 443 反代 -> 再解析该域名 ->
+:: 卡在 IPv6 黑洞」的自指死锁（真机 pre14：relays.md 请求 29.8 秒后返回 400）。
+:: 这里在 toml 已落到发布目录之后做后处理（不是改仓库里的模板）：
+::   a) 从 urls 数组中摘掉自引用项，保留 download.dnscrypt.info / .net 等镜像；
+::   b) 整段删除 [sources.relays] —— [anonymized_dns] 的 routes 全部被注释，relays 从未被使用，
+::      本次 400 正是由它触发，删掉即省掉一次注定失败的请求。
+:: 逐行过滤（比整串正则更稳），回写时统一为 LF 行尾且无 BOM，避免 dnscrypt-proxy 解析异常。
+powershell -NoProfile -Command "$p='%PKG%\dnscrypt-proxy\dnscrypt-proxy.toml'; if (-not (Test-Path $p)) { Write-Error 'dnscrypt-proxy.toml 不存在'; exit 1 }; $q=[string][char]39; $re1=$q+'https://raw\.githubusercontent\.com/[^'+$q+']*'+$q+'\s*,\s*'; $re2=',\s*'+$q+'https://raw\.githubusercontent\.com/[^'+$q+']*'+$q; $raw=[System.IO.File]::ReadAllText($p); $sep=[string][char]13+'?'+[string][char]10; $lines=$raw -split $sep; $out=New-Object System.Collections.Generic.List[string]; $inRelays=$false; foreach($l in $lines){ $t=$l.Trim(); if($inRelays){ if($t.Length -eq 0 -or $t.StartsWith('[')){ $inRelays=$false; $out.Add($l) }; continue }; if($t -eq '[sources.relays]'){ $inRelays=$true; continue }; if($l.Contains('raw.githubusercontent.com')){ $l=$l -replace $re1,''; $l=$l -replace $re2,'' }; $out.Add($l) }; $new=[string]::Join([string][char]10,$out)+[string][char]10; [System.IO.File]::WriteAllText($p,$new,(New-Object System.Text.UTF8Encoding($false))); $r=[System.IO.File]::ReadAllText($p); if($r.Contains('raw.githubusercontent.com')){ Write-Error '自引用源未摘除'; exit 1 }; if($r.Contains('[sources.relays]')){ Write-Error 'relays 源段未删除'; exit 1 }; if($r.Contains('[sources.public-resolvers]') -eq $false){ Write-Error 'public-resolvers 段丢失'; exit 1 }; if($r.Contains('download.dnscrypt.info') -eq $false){ Write-Error '可用镜像源丢失'; exit 1 }"
+if errorlevel 1 goto :fail
+echo   [OK] dnscrypt 源已去自指（镜像源保留），无用 relays 源段已删除
+
 echo [5g] dnscrypt-proxy 完整性校验（基线固定，非"已审计"：无法逆向 7MB 二进制）
 :: 该 exe 是 git blob，UPSTREAM_COMMIT 已从内容上绑定它；本校验的作用是
 :: 「审计结论以哈希形式沉淀下来」，使后续任何变更都能被检出，而不是静默换包。

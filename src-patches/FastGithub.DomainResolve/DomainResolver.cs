@@ -95,23 +95,39 @@ namespace FastGithub.DomainResolve
 
                 // DNS可能返回远超MAX_IP_COUNT个记录，而下层对每个IP串行尝试连接(单IP超时10秒)，
                 // 不截断会让单次请求最坏耗时达到 记录数 × 10秒
-                var addressCount = 0;
-                await foreach (var adddress in this.dnsClient.ResolveAsync(endPoint, fastSort: true, cancellationToken))
+                //
+                // [PATCH] 先收集候选、再按「IPv4 优先」稳定重排、最后才截断到 MAX_IP_COUNT。
+                // 根因：dnsClient 内部按连接竞速排序（fastSort），而本机 IPv6 常常「握手能过、数据被黑洞」
+                // （真机 pre14：raw.githubusercontent.com 只拿到 2606:50c0:800x::154），竞速把 AAAA 顶到
+                // 最前，紧接着 MAX_IP_COUNT=3 的截断就把配额吃满，A 记录一次都没被用上——表现为任何
+                // 带 AAAA 的加速域名动辄卡满 30 秒后 400。重排只降低 IPv6 的优先级：IPv6 依然留在候选
+                // 列表里，仅在 IPv4 不足配额（或 IPv4 全不可达）时才被选中，IPv6-only 网络不会失效。
+                var candidates = new List<IPAddress>();
+                await foreach (var address in this.dnsClient.ResolveAsync(endPoint, fastSort: true, cancellationToken))
                 {
                     // [PATCH] 丢弃链路本地地址（IPv4 169.254.0.0/16、IPv6 fe80::/10）：
                     // 它们只在本地链路有效，绝不可能是目标服务器地址；下发后下层会对它发起
                     // 必然超时的连接（单 IP 10 秒），放大成重试风暴。回环地址仍放行。
-                    if (IsConnectableAddress(adddress) == false)
+                    if (IsConnectableAddress(address) == false)
                     {
                         continue;
                     }
 
-                    yield return adddress;
-                    addressCount = addressCount + 1;
-                    if (addressCount >= MAX_IP_COUNT)
+                    candidates.Add(address);
+
+                    // 已集满配额的 IPv4 时提前结束枚举：后续候选无论什么族都不可能进入最终名单，
+                    // 避免为凑满总数而白白等待后续 DNS 服务器（每个最多 4 秒）。
+                    if (candidates.Count(item => item.AddressFamily == AddressFamily.InterNetwork) >= MAX_IP_COUNT)
                     {
                         break;
                     }
+                }
+
+                var addressCount = 0;
+                foreach (var address in OrderIPv4First(candidates).Take(MAX_IP_COUNT))
+                {
+                    yield return address;
+                    addressCount = addressCount + 1;
                 }
 
                 if (addressCount == 0)
@@ -134,8 +150,9 @@ namespace FastGithub.DomainResolve
                 var oldAddresses = keyValue.Value;
 
                 var newAddresses = await this.addressService.GetAddressesAsync(dnsEndPoint, oldAddresses, cancellationToken);
-                // [PATCH] 先过滤链路本地地址再截断，避免无效 IP 占满 MAX_IP_COUNT 配额
-                newAddresses = newAddresses.Where(IsConnectableAddress).Take(MAX_IP_COUNT).ToArray();
+                // [PATCH] 先过滤链路本地地址，再按 IPv4 优先重排，最后截断，避免无效 IP 占满 MAX_IP_COUNT 配额。
+                // 测速结果同样可能是 AAAA 在前（原因见 OrderIPv4First 的说明），这里保持一致的重排口径。
+                newAddresses = OrderIPv4First(newAddresses.Where(IsConnectableAddress)).Take(MAX_IP_COUNT).ToArray();
                 this.dnsEndPointAddress[dnsEndPoint] = newAddresses;
 
                 if (newAddresses.Length == 0)
@@ -193,6 +210,17 @@ namespace FastGithub.DomainResolve
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// [PATCH] 稳定重排：IPv4 在前、IPv6 在后，同一地址族内保持传入顺序（即上游竞速/测速给出的顺序）。
+        /// 只降低 IPv6 的优先级，不剔除 IPv6——IPv6 仍作为后备地址参与后续连接，IPv6-only 网络不受影响。
+        /// </summary>
+        /// <param name="addresses">待重排的地址序列</param>
+        /// <returns>IPv4 在前、IPv6 在后的地址序列</returns>
+        private static IEnumerable<IPAddress> OrderIPv4First(IEnumerable<IPAddress> addresses)
+        {
+            return addresses.OrderBy(item => item.AddressFamily == AddressFamily.InterNetwork ? 0 : 1);
         }
 
         /// <summary>

@@ -82,7 +82,7 @@ build-portable.cmd
 4. **注入 UI 增强补丁**：把 `src-patches/FastGithub.UI/` 下的 `Program.cs`、`MainWindow.xaml`、`AcceleratorPanel.xaml(.cs)` 覆盖进 `FastGithub.UI/`，新增「加速」标签页与加速控制面板（启停开关 + 网址勾选 + HF 模式切换）。**不改 FastGithub 核心代码**。
 5. **注入配置片段**：新增的 `appsettings.huggingface.json` 直接拷入 `FastGithub/appsettings/`；GitHub 主站片段同样由 `src-patches/FastGithub/appsettings/appsettings.github.json` 补丁覆盖（含 `collector.github.com` 直返 204）。上游 commit 已 pin，不再存在「上游更新后被旧副本回退」的风险。
 6. 两步发布（先 UI 再核心单文件，`--self-contained` + `PublishTrimmed` + `PublishSingleFile`）→ 自带运行时、免安装。
-7. **修正 dnscrypt-proxy 目录命名**：代码期望 `dnscrypt-proxy/`，但仓库目录是 `@dnscrypt-proxy/`，脚本把 `win-x64/dnscrypt-proxy.exe` + `dnscrypt-proxy.toml` 拷成 `dnscrypt-proxy/`，否则 DNS 防污染会静默失效（降级到 FallbackDns，仍可加速）。
+7. **修正 dnscrypt-proxy 目录命名**：代码期望 `dnscrypt-proxy/`，但仓库目录是 `@dnscrypt-proxy/`，脚本把 `win-x64/dnscrypt-proxy.exe` + `dnscrypt-proxy.toml` 拷成 `dnscrypt-proxy/`，否则 DNS 防污染会静默失效（降级到 FallbackDns，仍可加速）。拷完再对发布目录里的 `dnscrypt-proxy.toml` 做后处理：摘掉自引用的拉源地址（该地址会被本工具自己投毒到 `127.0.0.1`，导致拉源请求绕回本机反代并超时），并删除未启用的 relays 源段，镜像源保留。
 8. **防御 WinDivert 原生库**：单文件下 `WinDivert64.sys`/`WinDivert.dll` 可能只在 `runtimes/win-x64/native/`，脚本将其补到 exe 同级（驱动必须挨着 `WinDivert.dll` 才能加载）。
 9. 创建 `appsettings/disabled/` 目录（停用站点片段存放处，引擎不扫描该子目录）并 `Compress-Archive` 打包成 zip。
 10. **默认站点收敛**：只保留 `github` 与 `huggingface`，其余片段（含高风险的 `packages` / `amazonaws`）一律移入 `appsettings/disabled/`，需用户在 UI 中显式勾选。

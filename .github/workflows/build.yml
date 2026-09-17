@@ -659,6 +659,42 @@ jobs:
           fi
           echo "  已确认配置绑定源生成器已禁用且 fastgithub 程序集已 root（反射绑定恢复）"
 
+          # [P0] dnscrypt 源去自指：源列表里的自引用项会被自身投毒进 127.0.0.1，形成拉源死锁
+          F42="dist/fastgithub_win-x64/dnscrypt-proxy/dnscrypt-proxy.toml"
+          if [ ! -f "$F42" ]; then
+            echo "::error::[5i] 补丁未生效：$F42 不存在"
+            exit 1
+          fi
+          if grep -q 'raw.githubusercontent.com' "$F42"; then
+            echo "::error::[P0] dnscrypt 源仍含自引用项（会被自身投毒进 127.0.0.1，拉源请求必然超时）"
+            exit 1
+          fi
+          if grep -q '\[sources.relays\]' "$F42"; then
+            echo "::error::[P0] dnscrypt 仍保留无用的 relays 源段（anonymized DNS 未启用，只会触发注定失败的拉取）"
+            exit 1
+          fi
+          if ! grep -q 'download.dnscrypt.info' "$F42"; then
+            echo "::error::[P0] dnscrypt 可用镜像源丢失（public-resolvers 将无法刷新）"
+            exit 1
+          fi
+          echo "  已确认 dnscrypt 源已去自指且未使用的 relays 源段已删除"
+
+          # [P0] 候选 IP 按 IPv4 优先重排：否则 AAAA 会占满截断配额，IPv4 永不生效
+          F43="src/FastGithub.DomainResolve/DomainResolver.cs"
+          if [ ! -f "$F43" ]; then
+            echo "::error::[5i] 补丁未生效：$F43 不存在"
+            exit 1
+          fi
+          if ! grep -q 'AddressFamily.InterNetwork ? 0 : 1' "$F43"; then
+            echo "::error::[P0] DomainResolver 未做 IPv4 优先重排（AAAA 会占满截断配额，IPv4 永不生效）"
+            exit 1
+          fi
+          if ! grep -q 'OrderIPv4First' "$F43"; then
+            echo "::error::[P0] DomainResolver 缺少 IPv4 优先重排方法"
+            exit 1
+          fi
+          echo "  已确认 DomainResolver 已按 IPv4 优先重排（IPv6 仍保留为后备）"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1
