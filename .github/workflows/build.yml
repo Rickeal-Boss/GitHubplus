@@ -707,6 +707,34 @@ jobs:
           fi
           echo "  已确认 Release 条件带引号（Release 下不再产出调试符号）"
 
+          # [P1] 父进程监控：锚点已死（ArgumentException）是预期分支，不得记 Error 污染日志
+          F46="src/FastGithub/AppHostedService.cs"
+          if [ ! -f "$F46" ]; then
+            echo "::error::[2az] 补丁未生效：$F46 不存在"
+            exit 1
+          fi
+          if ! grep -q "catch (ArgumentException)" "$F46"; then
+            echo "::error::[P1] AppHostedService 未单独捕获 ArgumentException（UI 快速重启时锚点已死会被误记为 Error）"
+            exit 1
+          fi
+          if ! grep -q "using var parent" "$F46"; then
+            echo "::error::[P1] AppHostedService 未用 using 释放 GetProcessById 返回的句柄"
+            exit 1
+          fi
+          echo "  已确认父进程监控的预期异常已降级（ArgumentException -> Information）"
+
+          # [P2] git 缺失降噪：无 git 时跳过配置而非告警「写入失败」
+          F47="src/FastGithub.HttpServer/Certs/CertService.cs"
+          if [ ! -f "$F47" ]; then
+            echo "::error::[2d] 补丁未生效：$F47 不存在"
+            exit 1
+          fi
+          if ! grep -q "IsGitAvailable" "$F47"; then
+            echo "::error::[P2] CertService 缺少 git 存在性探测（无 git 用户每次启动收到误导性 WRN）"
+            exit 1
+          fi
+          echo "  已确认 git 缺失时跳过配置（不再误告警）"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1

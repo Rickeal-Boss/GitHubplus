@@ -194,6 +194,18 @@ namespace FastGithub.HttpServer.Certs
                 return;
             }
 
+            // [PATCH] 前置 git 存在性探测：便携版用户的机器常没有安装 Git for Windows，
+            // 此时 cmd /c git 返回 9009（找不到命令），RunGitConfig 恒 false，
+            // 每次启动都落一条 WRN"写入失败"——对没装 git 的用户是纯噪声且带误导性
+            //（暗示 git https 会失败，实际该用户根本不用 git）。真机 pre17 日志 7 次启动
+            // 7 条该 WRN。探测走与 RunGitConfig 相同的进程启动方式（cmd.exe 绝对路径 +
+            // WorkingDirectory=SystemDirectory），保证探测与后续执行看到的是同一个 git。
+            if (IsGitAvailable() == false)
+            {
+                this.logger.LogInformation("未检测到 git（PATH 中无 git），跳过 git 证书配置；不影响浏览器加速。");
+                return;
+            }
+
             // 清理旧版本遗留的全局关闭配置（幂等：未设置时 git 返回非 0，忽略退出码即可）
             RunGitConfig("--unset http.sslVerify");
 
@@ -235,6 +247,32 @@ namespace FastGithub.HttpServer.Certs
                 "该组合不会读取 Windows 证书存储，git 可能不信任本机 CA 导致操作失败。" +
                 "可自行执行 git config --global --unset http.sslBackend 切换为 schannel，" +
                 $"或把 {this.CaCerFilePath} 追加到你现有的 CA 包中。");
+        }
+
+        /// <summary>
+        /// [PATCH] 探测 git 是否可用（cmd /c where git，返回 0 即 PATH 中存在）。
+        /// 探测与 RunGitConfig/RunGitConfigGet 使用同一套进程启动方式（cmd.exe 绝对路径 +
+        /// WorkingDirectory=SystemDirectory），保证两者看到的 git 是同一个，不引入探测/执行不一致。
+        /// </summary>
+        /// <returns>true = PATH 中能找到 git</returns>
+        private static bool IsGitAvailable()
+        {
+            try
+            {
+                using var process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = Path.Combine(Environment.SystemDirectory, "cmd.exe"),
+                    Arguments = "/c where git",
+                    WorkingDirectory = Environment.SystemDirectory,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                return process != null && process.WaitForExit(5000) && process.ExitCode == 0;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>

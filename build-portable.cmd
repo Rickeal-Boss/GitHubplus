@@ -250,6 +250,13 @@ echo [2ab] 注入 TLS 入侵中间件补丁（裸 catch{} 改为记 Debug）
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\TlsMiddlewares\TlsInvadeMiddleware.cs" "%SRC%\FastGithub.HttpServer\TlsMiddlewares\TlsInvadeMiddleware.cs"
 if errorlevel 1 goto :fail
 
+echo [2az] 注入父进程监控补丁（锚点已死是预期分支，降 Information 而非 Error）
+:: 上游 AppHostedService.WaitForParentProcessExitAsync 把 GetProcessById 的一切异常记 Error；
+:: 其中 ArgumentException（进程不存在）在 UI 快速重启场景是预期路径（锚点 ping 已随上一个
+:: UI 实例退出而死亡），真机 pre17 日志 10 秒内连续 4 条 ERR 即来源于此；且上游不释放
+:: GetProcessById 返回的 Process 句柄。补丁：ArgumentException 单独降为 Information + using 释放。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub\AppHostedService.cs" "%SRC%\FastGithub\AppHostedService.cs" || goto :fail
+
 echo [2ae] 注入配置绑定防裁剪补丁（FastGithubOptions.DomainConfigs 标注 DynamicallyAccessedMembers）
 :: PublishTrimmed 会裁掉「仅被反射访问」的成员，而 ConfigurationBinder 是纯反射绑定：DomainConfig/
 :: ResponseConfig 为 record + init-only 属性，setter 被裁后绑定器静默保留默认值（键在、值全丢，
@@ -291,7 +298,7 @@ echo [5i] dnscrypt 源去自指：摘掉自引用源，删除从未使用的 rel
 :: 故每行先 Trim、再剥掉单/双引号做归一化比较；删除 relays 时一直丢弃到下一个任意段头为止
 :: （终止行保留，避免吞掉后续段）；四条校验同样基于归一化后的内容，任一不符即 exit 1。
 :: 逐行过滤（比整串正则更稳），回写时统一为 LF 行尾且无 BOM，避免 dnscrypt-proxy 解析异常。
-powershell -NoProfile -Command "$p='%PKG%\dnscrypt-proxy\dnscrypt-proxy.toml'; if (-not (Test-Path $p)) { Write-Error 'dnscrypt-proxy.toml 不存在'; exit 1 }; $qs=[string][char]39; $qd=[string][char]34; $re1=$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs+'\s*,\s*'; $re2=',\s*'+$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs; $raw=[System.IO.File]::ReadAllText($p); $sep=[string][char]13+'?'+[string][char]10; $lines=$raw -split $sep; $out=New-Object System.Collections.Generic.List[string]; $inRelays=$false; foreach($l in $lines){ $t=$l.Trim(); $n=$t.Replace($qs,'').Replace($qd,''); if($inRelays){ if($t.StartsWith('[')){ $inRelays=$false; $out.Add($l) }; continue }; if($n -eq '[sources.relays]'){ $inRelays=$true; continue }; if($l.Contains('raw.githubusercontent.com')){ $l=$l -replace $re1,''; $l=$l -replace $re2,'' }; $out.Add($l) }; $new=[string]::Join([string][char]10,$out)+[string][char]10; [System.IO.File]::WriteAllText($p,$new,(New-Object System.Text.UTF8Encoding($false))); $r=[System.IO.File]::ReadAllText($p); $rn=$r.Replace($qs,'').Replace($qd,''); if($r.Contains('raw.githubusercontent.com')){ Write-Error '自引用源未摘除'; exit 1 }; if($rn.Contains('[sources.relays]')){ Write-Error 'relays 源段未删除'; exit 1 }; if($rn.Contains('[sources.public-resolvers]') -eq $false){ Write-Error 'public-resolvers 段丢失'; exit 1 }; if($r.Contains('download.dnscrypt.info') -eq $false){ Write-Error '可用镜像源丢失'; exit 1 }"
+powershell -NoProfile -Command "$p='%PKG%\dnscrypt-proxy\dnscrypt-proxy.toml'; if (-not (Test-Path $p)) { Write-Error 'dnscrypt-proxy.toml 不存在'; exit 1 }; $qs=[string][char]39; $qd=[string][char]34; $re1=$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs+'\s*,\s*'; $re2=',\s*'+$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs; $raw=[System.IO.File]::ReadAllText($p); $sep=[string][char]13+'?'+[string][char]10; $lines=$raw -split $sep; $out=New-Object System.Collections.Generic.List[string]; $inRelays=$false; foreach($l in $lines){ $t=$l.Trim(); $n=$t.Replace($qs,'').Replace($qd,''); if($inRelays){ if($t.StartsWith('[')){ $inRelays=$false; $out.Add($l) }; continue }; if($n -eq '[sources.relays]'){ $inRelays=$true; continue }; if($l.Contains('raw.githubusercontent.com')){ $l=$l -replace $re1,''; $l=$l -replace $re2,'' }; $out.Add($l) }; if($out.Count -gt 0 -and $out[$out.Count-1].Length -eq 0){ $out.RemoveAt($out.Count-1) }; $new=[string]::Join([string][char]10,$out)+[string][char]10; [System.IO.File]::WriteAllText($p,$new,(New-Object System.Text.UTF8Encoding($false))); $r=[System.IO.File]::ReadAllText($p); $rn=$r.Replace($qs,'').Replace($qd,''); if($r.Contains('raw.githubusercontent.com')){ Write-Error '自引用源未摘除'; exit 1 }; if($rn.Contains('[sources.relays]')){ Write-Error 'relays 源段未删除'; exit 1 }; if($rn.Contains('[sources.public-resolvers]') -eq $false){ Write-Error 'public-resolvers 段丢失'; exit 1 }; if($r.Contains('download.dnscrypt.info') -eq $false){ Write-Error '可用镜像源丢失'; exit 1 }"
 if errorlevel 1 goto :fail
 echo   [OK] dnscrypt 源已去自指（镜像源保留），无用 relays 源段已删除
 
