@@ -706,6 +706,14 @@ jobs:
             exit 1
           fi
           echo "  已确认 Release 条件带引号（Release 下不再产出调试符号）"
+          # [PATCH] 上一条对**上游原版也命中**（上游 Directory.Build.props 本就带引号），
+          # 单看是恒真的假闸门 —— 补丁没注入时它照样通过。本组必须补一条上游肯定没有的
+          # 判别串，整组才具备判别力。
+          if ! grep -q "IncludeSourceRevisionInInformationalVersion" "$F44"; then
+            echo "::error::[P1] Directory.Build.props 缺少 IncludeSourceRevisionInInformationalVersion（本组首条断言对上游恒真，需靠此串提供判别力）"
+            exit 1
+          fi
+          echo "  已确认本组断言具备判别力（首条对上游恒真，由补丁独有属性兜住）"
 
           # [P1] 父进程监控：锚点已死（ArgumentException）是预期分支，不得记 Error 污染日志
           F46="src/FastGithub/AppHostedService.cs"
@@ -836,6 +844,58 @@ jobs:
             exit 1
           fi
           echo "  已确认 UI 引擎句柄读取已加并发兜底"
+
+          # [P0] 出站 TLS 链校验：链错误必须最先拒绝。
+          # 判别串 RemoteCertificateChainErrors 在上游 HttpClientHandler.cs 中**不存在**
+          # （上游只出现 RemoteCertificateNameMismatch 与 None），故本断言对上游会失败。
+          F55="src/FastGithub.Http/HttpClientHandler.cs"
+          if [ ! -f "$F55" ]; then
+            echo "::error::[2af] 补丁未生效：$F55 不存在"
+            exit 1
+          fi
+          if ! grep -q "RemoteCertificateChainErrors" "$F55"; then
+            echo "::error::[2af] 出站 TLS 未做链错误优先拒绝（TlsIgnoreNameMismatch 域名可被自签证书 MITM）"
+            exit 1
+          fi
+          echo "  已确认出站 TLS 链错误优先拒绝（自签证书不再被放行）"
+
+          # [P2] ssh/git 反向代理 Socket 句柄：成功分支必须 ownsSocket: true。
+          # 判据用完整的一行 return 语句而非单词，避免被注释里的说明文字命中。
+          F56="src/FastGithub.HttpServer/TcpMiddlewares/TcpReverseProxyHandler.cs"
+          if [ ! -f "$F56" ]; then
+            echo "::error::[2ag] 补丁未生效：$F56 不存在"
+            exit 1
+          fi
+          if ! grep -q "return new NetworkStream(socket, ownsSocket: true);" "$F56"; then
+            echo "::error::[2ag] ssh/git 反向代理仍在泄漏 Socket 句柄（成功分支未设 ownsSocket: true）"
+            exit 1
+          fi
+          echo "  已确认 ssh/git 反向代理不再泄漏 Socket 句柄"
+
+          # [P3] 补齐此前完全无看守的两项：WinDivert64.sys 哈希基线，
+          # 以及两个只有 copy /Y 注入、没有任何内容断言的 UI 文件。
+          F57="src/FastGithub/Program.cs"
+          if [ ! -f "$F57" ]; then
+            echo "::error::[2s] 补丁未生效：$F57 不存在"
+            exit 1
+          fi
+          if ! grep -q "8DA085332782708D8767BCACE5327A6EC7283C17CFB85E40B03CD2323A90DDC2" "$F57"; then
+            echo "::error::[2s] 补丁未生效：缺少 WinDivert64.sys 的 SHA256 基线（此前完全无断言看守）"
+            exit 1
+          fi
+          echo "  已确认 WinDivert64.sys 已加入哈希自愈基线"
+
+          for f in "src/FastGithub.UI/MainWindow.xaml" "src/FastGithub.UI/AcceleratorPanel.xaml" "src/FastGithub.UI/AcceleratorPanel.xaml.cs"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::[2c] 补丁未生效：$f 不存在（该文件此前无任何断言看守）"
+              exit 1
+            fi
+          done
+          if ! grep -q "AcceleratorPanel" "src/FastGithub.UI/MainWindow.xaml"; then
+            echo "::error::[2c] 主窗体未引用加速面板（MainWindow.xaml 缺少 AcceleratorPanel）"
+            exit 1
+          fi
+          echo "  已确认加速面板相关文件存在且已被主窗体引用"
 
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"

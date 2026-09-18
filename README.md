@@ -53,7 +53,9 @@
 | `appsettings.huggingface.json` | HuggingFace 镜像重定向配置 | **新增**（本工具核心改动） |
 | `build-portable.cmd` | Windows 免安装包一键构建脚本 | **新增** |
 | `src-patches/FastGithub.UI/` | UI 增强补丁：`Program.cs`（进程启停）、`MainWindow.xaml`（新增「加速」标签）、`AcceleratorPanel.xaml(.cs)`（加速控制面板） | **新增**（构建时覆盖进克隆源码，不改 FastGithub 核心） |
-| `src-patches/FastGithub.HttpServer/Certs/CertService.cs` | 证书服务补丁：去掉强制关闭 git 全局校验（改切 `http.sslBackend schannel`）、CA 有效期 10 年 → 5 年 | **新增**（构建时覆盖进克隆源码） |
+| `src-patches/FastGithub.HttpServer/Certs/CertService.cs` | 证书服务补丁：去掉强制关闭 git 全局校验（改切 `http.sslBackend schannel`）、CA 有效期 10 年 → 5 年、到期轮换、证书/私钥配对校验、**私钥落盘后收紧 ACL** | **新增**（构建时覆盖进克隆源码） |
+| `src-patches/FastGithub.Http/HttpClientHandler.cs` | **出站 TLS 链校验补丁**：修复上游「`TlsIgnoreNameMismatch` 域名连带放弃证书链校验」——自签/伪造证书会同时带 `NameMismatch\|ChainErrors`，上游 `HasFlag(NameMismatch)` 成立即放行，等于默认启用站点的 raw 下载 / Release / 头像可被一张自签证书投毒 | **新增**（构建时覆盖进克隆源码） |
+| `src-patches/FastGithub.HttpServer/TcpMiddlewares/TcpReverseProxyHandler.cs` | ssh(:22) / git(:9418) 反向代理的 Socket 句柄泄漏补丁（`ownsSocket: false` → `true`） | **新增**（构建时覆盖进克隆源码） |
 | `clean.cmd` | 卸载清理脚本：移除本机根存储中的 FastGithub CA + 恢复 git 配置 + 删除本地 CA 与私钥 | **新增**（需管理员运行） |
 | `.gitattributes` | 强制 `*.cmd` / `*.bat` 以 CRLF 签出，规避 cmd.exe 对「中文 + LF」的解析 bug | **新增** |
 | `src-patches/FastGithub.HttpServer/ServiceCollectionExtensions.cs` | 证书缓存加 `SizeLimit=4096` 上限 + 淘汰时 `Dispose`，避免大量不同子域导致 `X509Certificate2` 句柄无界增长 | **新增**（构建时覆盖进克隆源码） |
@@ -90,9 +92,11 @@ build-portable.cmd
 
 > ⚠ **换行符**：`build-portable.cmd` / `clean.cmd` 必须以 **CRLF** 换行运行。含中文注释的 .cmd 若以 LF 换行，cmd.exe 会解析错乱（多行块被拆散、延迟变量失效）。仓库已配 `.gitattributes` 强制 CRLF 签出；如果你是手动复制文件内容或从 Raw 链接下载的，请确认换行符为 CRLF。
 
-> 产物：`dist/FastGithub-Portable-win-x64.zip`。解压后目录含 `FastGithub.UI.exe`（界面启动器）、`fastgithub.exe`（核心）、`appsettings/`、`dnscrypt-proxy/`、`WinDivert64.sys` 等。
+> 产物：`dist/FastGithub-Portable-win-x64.zip`。解压后目录含 `FastGithub.UI.exe`（界面启动器）、`fastgithub.exe`（核心）、`appsettings/`、`dnscrypt-proxy/`、`clean.cmd`、`README.md` 等。
+>
+> 注：`WinDivert64.sys` / `WinDivert.dll` **不在**解压目录里 —— 单文件发布下它们由 `WindivertDotnet` 内嵌进 `fastgithub.exe`，首次运行时释放到 `%APPDATA%\WindivertDotnet\`。脚本 `[5b]` 的补文件分支仅在非单文件构建时才会用到。
 
-### 手动构建（等价于脚本，便于排错）
+### 手动构建（**不等价**于脚本，仅用于理解流程；请勿据此出包）
 
 ```powershell
 # 注意：下面这行仅为排错演示，实际请用 build-portable.cmd——它会按已审计的
@@ -106,6 +110,8 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 ```
 
 > 说明：官方 `publish.cmd` 用 `PublishTrimmed`（非 AOT）。**建议沿用 Trimmed** 而非 AOT——FastGithub 用了 `Dictionary<string,DomainConfig>` 的反射（`Startup` 里有 `[DynamicDependency]` 标注），AOT 易因裁剪导致配置反序列化失败。Trimmed 自包含已满足「免安装」。
+>
+> ⚠ **上面这段与 `build-portable.cmd` 并不等价**，缺了这些关键动作：① 不会注入 `src-patches/` 下的补丁文件；② 不会执行 `[2f]`/`[2i]`/`[2ac]`/`[2ad]` 的字符串替换（NuGet 版本固定、Yarp 1.1.1→1.1.2、Caching.Memory 6.0.1→10.0.12、移除 CA 的 clientAuth EKU）；③ 不会做 `[5c]`~`[5i]` 的发布后处理（禁用片段目录、移除预置 cacert、dnscrypt 完整性校验、默认站点收敛、`dnscrypt-proxy.toml` 去自指）。**按上面出的包缺少全部安全加固，请勿用于实际部署**——仅用于理解流程与定位构建问题。
 
 ---
 
@@ -199,7 +205,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 不再使用时，请到**程序运行目录**以**管理员身份**运行包内的 `clean.cmd`（清理 `LocalMachine` 根证书存储必须提权，脚本会自检并在未提权时退出；启动时会先切到脚本所在目录，避免右键「以管理员运行」时工作目录被重置到 System32）。它依次做八步：
 
 1. **结束进程**：`fastgithub.exe` / `FastGithub.UI.exe` / `dnscrypt-proxy.exe`（引擎在跑时私钥被占用，不先停会删不掉却报成功）。
-2. **移除证书**：从 `Cert:\LocalMachine\Root` 与 `Cert:\CurrentUser\Root` 删除 Subject 含 `FastGithub` 的证书。
+2. **移除证书**：从 `Cert:\LocalMachine\Root` 与 `Cert:\CurrentUser\Root` 删除 Subject **精确等于** `CN=FastGithub` 且为自签名的证书（不是子串匹配——上游的 `FindBySubjectName` 会误删任何 Subject 里含 "FastGithub" 字样的第三方根证书）。
 3. **恢复 git 配置**：`--unset http.sslVerify` / `--unset http.sslBackend` / `--unset http.sslCAInfo`。
 4. **恢复系统代理绕过列表**：从 `HKCU\...\Internet Settings\ProxyOverride` 中**只移除能精确匹配** `appsettings` 片段里加速域名的条目（不动你自己配的）。
 5. **删除本地 CA 与私钥**：删除 `cacert/`（含 `fastgithub.key`）。
@@ -209,26 +215,33 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 
 > ⚠ 清理完也**不要分发运行过的程序目录**：`cacert\fastgithub.key` 是本机生成的 CA 私钥（明文）。换机器请用官方 Release 的干净压缩包重新解压。
 
-### 7.2 已知残留与限制（上游行为，本工具未改动）
+### 7.2 已知残留与限制
 
-以下几条属于「上游既有行为 + 本工具暂未修」，但会影响你对本机关联影响的判断，如实列出：
+> 本节条目多为「上游既有行为」，但其中若干条**已被本仓库补丁修正**。凡已修正处均标注 `[已修]`，请以标注为准，不要沿用旧结论。
 
 | 项 | 说明 | 应对 |
 |---|---|---|
-| **hosts 文件被改写且不会自动恢复** | 引擎启动时会把命中加速域名的 hosts 行注释掉；上游的恢复逻辑是空实现，**停止加速后不会还原** | 若你原本自定义过 hosts，停止加速后请自行检查 `C:\Windows\System32\drivers\etc\hosts` |
+| **hosts 文件被改写 —— [已修，会恢复]** | 引擎启动时会把命中加速域名的 hosts 行注释掉。**上游的恢复逻辑是空实现**（`RestoreAsync` 直接 `Task.CompletedTask`），强杀即永久残留；本仓库 `[2y]` 已实现完整恢复：按字节比较精确还原，并把被改动的行段以 base64 记入 `HKLM\SOFTWARE\FastGithub\HostsPatchedSegments`，**引擎优雅停机时自动还原，下次启动开头也会先自愈一次** | 仍建议：若你原本自定义过 hosts，停止加速后检查一次 `C:\Windows\System32\drivers\etc\hosts`。**注意：非管理员时注册表写不进去，此时程序会「不改 hosts」而不是改了不还原** |
 | **引擎可能残留后台运行** | 若 UI 被强杀或崩溃，`fastgithub.exe` 可能继续在后台拦截 443 并写日志，而托盘图标已消失、用户无感知 | 在任务管理器中结束 `fastgithub.exe`；或重新打开 UI 点「停止加速」 |
 | **覆盖式升级不收敛默认集** | 「默认只启用 GitHub 与 HuggingFace」只在**全新解压**时生效。若你在旧版本目录上直接覆盖解压，旧版已启用的站点片段仍留在 `appsettings/` 顶层继续生效 | 升级请用全新目录解压；或手动把不需要的 `appsettings.*.json` 移入 `appsettings/disabled/` |
-| **日志无容量上限** | `logs/log.txt` 按天滚动、不清理，记录访问过的**域名与路径**（不含 query） | `clean.cmd` 会一并删除 `logs/` |
+| **日志容量 —— [已修，有上限]** | `logs/log.txt` 记录访问过的**域名与路径**（不含 query / cookie / Authorization）。上游只按天滚动、无大小与数量限制；本仓库 `[2m]` 已加 `fileSizeLimitBytes=20MB` + `rollOnFileSizeLimit` + `retainedFileCountLimit=7` | `clean.cmd` 会一并删除 `logs/` |
 | **未配置域名也会被 MITM 转发** | 当某个域名被 DNS 投毒到 `127.0.0.1`（可能来自其他加速器如 Steam++，或被恶意 DNS 劫持），即使该域名**不在加速列表**，反向代理中间件也会用默认配置（`TlsSni=true`）解密并转发到真实主机。日志会打印"可能已经被DNS污染"警告。这意味着**本机 CA 的解密范围不限于你在 UI 里勾选的站点** | 不要同时运行其他会修改 DNS 的工具；若不需要加速，请停止引擎 |
 | **FallbackDns 的 TCP 53 被网络过滤（日志噪声）** | FallbackDns（`223.5.5.5:53` / `119.29.29.29:53`）的 TCP 53 在部分网络被过滤（RST / 超时），日志里原本每个 (域名, DNS) 组合每 10 分钟记一条 `FastGithub.DomainResolve.DnsClient` 的告警。解析主路径是内置 dnscrypt-proxy，不受影响，属纯噪声 | 已通过 `appsettings.json` 的 Serilog `MinimumLevel.Override` 把 `FastGithub.DomainResolve.DnsClient` 这个 context 降到 `Error`；**排查 DNS 问题时把它调回 `Warning` 即可恢复可见** |
+| **`collector.github.com` 由「转发」改为「直接返回 204」（行为变更，非纯优化）** | 上游没有为 `collector.github.com` 配置 `Response`，会走正常 MITM 转发；本仓库在 `appsettings.github.json` 里加了 `Response: 204`，**直接阻断**该埋点上报（目的：消除它每次会话数十次的 502 刷屏）。这是对上游行为的**主动改变** | 真机已验证 36 分钟 / 130 次 204、页面功能无异常。若你依赖 GitHub 的埋点/统计行为，可把该条目从 `appsettings\appsettings.github.json` 中删除后重启引擎 |
 
-**私钥 ACL（可选自行加固）**：`cacert\fastgithub.key` 为明文，目录权限继承程序目录。若只想让当前用户与 SYSTEM 可读，可在程序目录执行：
+**私钥 ACL —— [已修，程序生成时自动收紧]**：`cacert\fastgithub.key` 为明文。本仓库补丁在写入私钥后**立即切断 ACL 继承**，仅保留 `SYSTEM`、`Administrators` 与当前所有者三者（`CertService.RestrictPrivateKeyAccess`）。
+
+为什么必须收紧：CA 被装入 `LocalMachine\Root`（**机器级信任**），私钥一旦被非管理员本地账户读到，即可签发任意域名且被本机无条件信任的证书。服务模式下程序又被白名单强制限定到 `Program Files`（该目录 Users 组默认可读），这条路径因此是真实存在的。
+
+若你想进一步收紧（或自动生成失败时兜底），可在程序目录执行：
 
 ```bat
 icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
 ```
 
 > 不打算把私钥迁到 `%ProgramData%`：该目录默认继承的 ACL 反而更松（Everyone 可读），且写入需管理员权限，与免安装定位冲突。
+>
+> ⚠ 收紧 ACL 失败时**只记日志、不阻断启动** —— 宁可私钥保持默认权限，也不能让程序起不来。所以在多用户机器上仍建议执行一次上面的 `icacls`。
 
 ### 7.3 对系统的实际改动清单
 
@@ -238,11 +251,11 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 |---|---|---|
 | `HKCU\...\Internet Settings\ProxyOverride` | **追加加速域名绕过项**（实测可达数十条，含 `*.github.com` / `*.nuget.org` / `*.s3.amazonaws.com` 等）。上游只在**优雅停机**时移除，进程被强杀或崩溃时这些条目会**永久留在系统里** | ✅ `[3/7]`（仅删除能精确匹配本程序 `appsettings` 片段域名的条目，不动你原有的其它条目） |
 | `%APPDATA%\WindivertDotnet\` | WinDivert 内核驱动副本（`WinDivert64.sys` / `WinDivert.dll`），由 WindivertDotnet 解压，**「文件已存在即跳过」、永不复查** | ✅ `[6/7]` |
-| `drivers\etc\hosts` | 命中加速域名的行被注释掉；**上游没有实现恢复逻辑** | ❌ 需手工检查 |
+| `drivers\etc\hosts` | 命中加速域名的行被注释掉；**本仓库已实现恢复**（见 7.2），优雅停机时自动还原 | ✅ 自动还原（强杀时由下次启动自愈） |
 | Windows 服务 `fastgithub` / `FastGithub.dnscrypt-proxy` | 仅当你执行过 `fastgithub.exe start` 才存在；`AUTO_START` + `LocalSystem`，**会开机自启** | ✅ `[7/7]` |
-| `HKCU\...\FeatureControl\*` | UI 写入的浏览器内核版本 / DPI 兼容设置（无害） | ❌ 无需处理 |
+| `HKCU\...\FeatureControl\*` | UI 写入的浏览器内核版本 / DPI 兼容设置（无害） | ✅ `clean.cmd` `[3/7]` 会删除 `FEATURE_BROWSER_EMULATION` 与 `FEATURE_96DPI_PIXEL` |
 
-> ⚠ **WinDivert 驱动副本落在 `%APPDATA%`（用户可写目录），且加载前不校验完整性。** 同机任意用户态程序若改写该 `.sys`，在你下次「以管理员身份运行」时会被加载为**内核驱动**。建议把程序解压到受控目录（如 `D:\Tools\`，而非 Downloads / 桌面），以获得更严格的 ACL 保护。
+> ⚠ **WinDivert 驱动副本落在 `%APPDATA%`（用户可写目录）—— 完整性 [已修，会校验]**：本仓库 `[2s]` 已对 `WinDivert.dll` 与 `WinDivert64.sys` **双双**做 SHA256 基线校验，不符即删除、由内嵌资源重新释放（上游是「存在即跳过、永不复查」，且被替换后**不会自愈**）。残余风险：校验通过后到 `LoadLibrary` 之间存在 TOCTOU 窗口，且该 DLL 本身无 Authenticode 签名 —— 属同用户攻击面，无法完全消除。仍建议把程序解压到受控目录（如 `D:\Tools\`，而非 Downloads / 桌面），以获得更严格的 ACL 保护。
 
 > ⚠ **服务模式存在两处静默错位**：以 SYSTEM 身份运行 `fastgithub.exe start` 时，`git config --global` 写的是 SYSTEM 的 profile（对真实用户无效）、注册表代理设置写的是 `.DEFAULT` hive（同样无效）。也就是「让 git 信任本机 CA」与「代理绕过」在服务模式下**不生效**。本工具推荐桌面模式使用。
 >
@@ -305,9 +318,9 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyon
 
 仓库已配置 `.github/workflows/build.yml`：推送 `main`（或 tag、或手动）即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip`。
 
-- **每次推送 `main` 构建成功都会同步发布 Release**：以 `ci-<运行号>` 为标签自动建版并附上 zip（Releases 页始终有最新构建）。
-- **打 `v*` tag**（如 `v1.0.0`）则发布对应版本号 Release。
-- 构建时自动把托盘右键"检测更新"跳转链接改写为本仓库 `Rickeal-Boss/GitHubplus`（`build-portable.cmd` 的 `[2b]` 步 patch `FastGithub.UI/MainWindow.xaml.cs` 的 `RELEASES_URI`）；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 覆盖进克隆源码，新增「加速」标签页与加速控制面板）。
+- ⚠️ **更正（此前表述有误）**：**只有打 `v*` tag 才会发布 Release**。推送 `main` / 手动触发只会执行构建与断言，并把 zip 作为 **Artifact** 上传（保留 7 天），**不会**创建或更新 Release，也不存在 `ci-<运行号>` 这类标签。发布逻辑见 `build.yml` 的 `Publish Release (仅 tag 触发)` 步（条件 `startsWith(github.ref,'refs/tags/v')`）。
+- **打 `v*` tag**（如 `v3.0.0`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。
+- 构建时自动把托盘右键"检测更新"跳转链接指向本仓库 `Rickeal-Boss/GitHubplus`：`build-portable.cmd` 的 `[2b]` 步**整文件覆盖** `FastGithub.UI/MainWindow.xaml.cs`（上游原版指向 `dotnetcore/FastGithub`），并非字符串 patch；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 覆盖进克隆源码，新增「加速」标签页与加速控制面板）。
 - **上游供应链已 pin**：上游 `creazyboyone/FastGithub` 已固定到已审计的 commit `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（2025-08-01）。构建脚本 `build-portable.cmd` 只按这个 SHA 精确拉取，并在拉取后校验 `git rev-parse HEAD` 与之相等，不等即失败。**要升级上游版本，必须显式修改 `build-portable.cmd` 顶部的 `UPSTREAM_COMMIT`**——CI 里也有一道断言，改动该行会被校验。原 `dotnetcore/FastGithub` 已删库、现 fork 不再维护，切勿回到「追最新代码」的做法。
 - **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录，任一不符即构建失败。
 - **取构件 / Release**：仓库 **Actions** 页 → 对应运行 → **Artifacts**；或 **Releases** 页直接下载。

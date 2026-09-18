@@ -23,8 +23,16 @@ namespace FastGithub.DomainResolve
         /// 缓存命中条件是 addresses.Length > 0，而全失败时写入的是空数组，
         /// 空数组永不命中会导致每个请求都重走「DNS解析+竞速+串行连接全部候选IP」，
         /// 单IP连接超时为10秒，最终放大为重试风暴。故对失败结果做短时负缓存。
+        ///
+        /// [PATCH] 时长由 30 秒下调为 5 秒。原值会把「可自愈的瞬时抖动」放大成
+        /// 「不可自愈的 30 秒硬失败窗口」：负缓存位于请求热路径入口（ResolveAsync 最开头），
+        /// 一旦写入，窗口内该域名的每个请求都直接 yield break，下游三个调用方
+        /// （HttpClientHandler / TunnelMiddleware / TcpReverseProxyHandler）
+        /// 立即抛空 innerExceptions 的 AggregateException 并以 400 回给客户端，
+        /// DNS 在窗口内完全不再重试。30 秒远超一次 DNS 抖动的自愈时间；
+        /// 5 秒既能压住重试风暴，又能让失败快速自愈。
         /// </summary>
-        private const int NEGATIVE_CACHE_MILLISECONDS = 30 * 1000;
+        private const int NEGATIVE_CACHE_MILLISECONDS = 5 * 1000;
 
         private readonly DnsClient dnsClient;
         private readonly PersistenceService persistence;
@@ -137,7 +145,13 @@ namespace FastGithub.DomainResolve
                     addressCount = addressCount + 1;
                 }
 
-                if (addressCount == 0)
+                // [PATCH] 仅在「非取消」的情形下写负缓存。
+                // 原实现只要本轮没有下发任何地址就写入。而 yield return 是惰性的：
+                // 若调用方在拿到第一个地址前就断开枚举（浏览器 abort、引擎关闭、
+                // 上层 await foreach 提前 break），addressCount 会停在 0，
+                // 于是「一次客户端取消」被误判成「一次解析失败」，
+                // 把该域名钉进负缓存窗口。取消不是失败，不应惩罚后续请求。
+                if (addressCount == 0 && cancellationToken.IsCancellationRequested == false)
                 {
                     this.SetNegativeCache(endPoint);
                 }

@@ -266,6 +266,24 @@ echo [2ae] 注入配置绑定防裁剪补丁（FastGithubOptions.DomainConfigs �
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.Configuration\FastGithubOptions.cs" "%SRC%\FastGithub.Configuration\FastGithubOptions.cs"
 if errorlevel 1 goto :fail
 
+echo [2af] 注入出站 TLS 链校验补丁（修复 TlsIgnoreNameMismatch 连带放弃链校验 → 自签证书即可 MITM）
+:: 上游 ValidateServerCertificate 先判 HasFlag(RemoteCertificateNameMismatch) 再直接 return true。
+:: 而自签/伪造证书会同时置上 NameMismatch|ChainErrors 两个标志，HasFlag(NameMismatch) 成立即放行，
+:: 等于对配置了 TlsIgnoreNameMismatch 的域名完全放弃证书链校验。该配置在默认启用的 github 片段里
+:: 覆盖 *.github.com / *.githubusercontent.com / *.githubassets.com / *.github.io / *.githubapp.com /
+:: gist.github.com，即 raw 下载、Release 附件与头像资源全部可被一张自签证书投毒。
+:: 这与设计意图相悖（本意是「只放行链有效但域名不匹配」），补丁改为链错误最先拒绝。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.Http\HttpClientHandler.cs" "%SRC%\FastGithub.Http\HttpClientHandler.cs"
+if errorlevel 1 goto :fail
+
+echo [2ag] 注入 ssh/git 反向代理 Socket 句柄泄漏补丁（ownsSocket: false → true）
+:: 上游成功分支直接 return new NetworkStream(socket, ownsSocket: false)，既不会被 catch 里的
+:: socket.Dispose() 覆盖，也不会在 using var connection 释放流时连带释放 Socket。
+:: 结果每建立一条 ssh(:22)/git(:9418) 代理连接就泄漏一个句柄，只能等终结器兜底。
+:: 同目录 TunnelMiddleware 用的就是 ownsSocket: true，这里对齐。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\TcpMiddlewares\TcpReverseProxyHandler.cs" "%SRC%\FastGithub.HttpServer\TcpMiddlewares\TcpReverseProxyHandler.cs"
+if errorlevel 1 goto :fail
+
 echo [3/6] 注入加速配置（HuggingFace 镜像；GitHub collector 片段已在 [2w] 覆盖）
 copy /Y "%SCRIPT_DIR%appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
 
@@ -298,7 +316,7 @@ echo [5i] dnscrypt 源去自指：摘掉自引用源，删除从未使用的 rel
 :: 故每行先 Trim、再剥掉单/双引号做归一化比较；删除 relays 时一直丢弃到下一个任意段头为止
 :: （终止行保留，避免吞掉后续段）；四条校验同样基于归一化后的内容，任一不符即 exit 1。
 :: 逐行过滤（比整串正则更稳），回写时统一为 LF 行尾且无 BOM，避免 dnscrypt-proxy 解析异常。
-powershell -NoProfile -Command "$p='%PKG%\dnscrypt-proxy\dnscrypt-proxy.toml'; if (-not (Test-Path $p)) { Write-Error 'dnscrypt-proxy.toml 不存在'; exit 1 }; $qs=[string][char]39; $qd=[string][char]34; $re1=$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs+'\s*,\s*'; $re2=',\s*'+$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs; $raw=[System.IO.File]::ReadAllText($p); $sep=[string][char]13+'?'+[string][char]10; $lines=$raw -split $sep; $out=New-Object System.Collections.Generic.List[string]; $inRelays=$false; foreach($l in $lines){ $t=$l.Trim(); $n=$t.Replace($qs,'').Replace($qd,''); if($inRelays){ if($t.StartsWith('[')){ $inRelays=$false; $out.Add($l) }; continue }; if($n -eq '[sources.relays]'){ $inRelays=$true; continue }; if($l.Contains('raw.githubusercontent.com')){ $l=$l -replace $re1,''; $l=$l -replace $re2,'' }; $out.Add($l) }; if($out.Count -gt 0 -and $out[$out.Count-1].Length -eq 0){ $out.RemoveAt($out.Count-1) }; $new=[string]::Join([string][char]10,$out)+[string][char]10; [System.IO.File]::WriteAllText($p,$new,(New-Object System.Text.UTF8Encoding($false))); $r=[System.IO.File]::ReadAllText($p); $rn=$r.Replace($qs,'').Replace($qd,''); if($r.Contains('raw.githubusercontent.com')){ Write-Error '自引用源未摘除'; exit 1 }; if($rn.Contains('[sources.relays]')){ Write-Error 'relays 源段未删除'; exit 1 }; if($rn.Contains('[sources.public-resolvers]') -eq $false){ Write-Error 'public-resolvers 段丢失'; exit 1 }; if($r.Contains('download.dnscrypt.info') -eq $false){ Write-Error '可用镜像源丢失'; exit 1 }"
+powershell -NoProfile -Command "$p='%PKG%\dnscrypt-proxy\dnscrypt-proxy.toml'; if (-not (Test-Path $p)) { Write-Error 'dnscrypt-proxy.toml 不存在'; exit 1 }; $qs=[string][char]39; $qd=[string][char]34; $re1=$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs+'\s*,\s*'; $re2=',\s*'+$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs; $raw=[System.IO.File]::ReadAllText($p); $sep=[string][char]13+'?'+[string][char]10; $lines=$raw -split $sep; $out=New-Object System.Collections.Generic.List[string]; $inRelays=$false; foreach($l in $lines){ $t=$l.Trim(); $n=$t.Replace($qs,'').Replace($qd,''); if($inRelays){ if($t.StartsWith('[') -or $t.StartsWith('#')){ $inRelays=$false; $out.Add($l) }; continue }; if($n -eq '[sources.relays]'){ $inRelays=$true; continue }; if($l.Contains('raw.githubusercontent.com')){ $l=$l -replace $re1,''; $l=$l -replace $re2,'' }; $out.Add($l) }; if($out.Count -gt 0 -and $out[$out.Count-1].Length -eq 0){ $out.RemoveAt($out.Count-1) }; $new=[string]::Join([string][char]10,$out)+[string][char]10; [System.IO.File]::WriteAllText($p,$new,(New-Object System.Text.UTF8Encoding($false))); $r=[System.IO.File]::ReadAllText($p); $rn=$r.Replace($qs,'').Replace($qd,''); if($r.Contains('raw.githubusercontent.com')){ Write-Error '自引用源未摘除'; exit 1 }; if($rn.Contains('[sources.relays]')){ Write-Error 'relays 源段未删除'; exit 1 }; if($rn.Contains('[sources.public-resolvers]') -eq $false){ Write-Error 'public-resolvers 段丢失'; exit 1 }; if($r.Contains('download.dnscrypt.info') -eq $false){ Write-Error '可用镜像源丢失'; exit 1 }"
 if errorlevel 1 goto :fail
 echo   [OK] dnscrypt 源已去自指（镜像源保留），无用 relays 源段已删除
 
@@ -361,7 +379,13 @@ if "!CONVERGE_FAIL!"=="1" (echo [错误] 默认站点收敛失败，高风险站
 
 echo [5d-verify] 复核 appsettings\ 顶层只应剩默认启用站点
 set "VERIFY_FAIL=0"
+rem [PATCH] 计数字段：for %%f 在**零匹配**时根本不执行循环体，
+rem VERIFY_FAIL 会保持 0 直接通过 —— 即「一个站点片段都没发布出去」也会被判为校验通过。
+rem 这是典型的“真空通过”：包内没有任何加速配置却放行，装上等于完全不可用。
+rem 这里统计实际遍历到的片段数，为零即硬失败。
+set "VCOUNT=0"
 for %%f in ("%PKG%\appsettings\appsettings.*.json") do (
+    set /A "VCOUNT+=1"
     set "VN=%%~nxf"
     set "VK=!VN:appsettings.=!"
     set "VK=!VK:.json=!"
@@ -372,8 +396,10 @@ for %%f in ("%PKG%\appsettings\appsettings.*.json") do (
         set "VERIFY_FAIL=1"
     )
 )
+if "!VCOUNT!"=="0" (echo [错误] 未产出任何 appsettings 站点片段（顶层为空），加速将完全不可用，终止构建 & goto :fail)
+if not exist "%PKG%\appsettings\appsettings.github.json" (echo [错误] 缺少核心片段 appsettings.github.json，终止构建 & goto :fail)
 if "!VERIFY_FAIL!"=="1" (echo [错误] 默认站点集合校验未通过，终止构建 & goto :fail)
-echo   [OK] 顶层启用站点与默认集合一致
+echo   [OK] 顶层启用站点与默认集合一致（共 !VCOUNT! 个片段，已确认含 github）
 
 echo [5e] 防御：移除任何预置 cacert（CA 必须由用户首次运行时在本机生成）
 if exist "%PKG%\cacert" (

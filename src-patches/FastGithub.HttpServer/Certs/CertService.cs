@@ -7,8 +7,11 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 
@@ -108,6 +111,19 @@ namespace FastGithub.HttpServer.Certs
             var privateKeyPem = this.caCert.GetRSAPrivateKey()?.ExportRSAPrivateKeyPem();
             File.WriteAllText(this.CaKeyFilePath, new string(privateKeyPem), Encoding.ASCII);
 
+            // [PATCH] 私钥落盘后立即收紧 ACL，仅保留 SYSTEM / Administrators / 当前所有者。
+            // CA 由 CaCertInstallerOfWindows 装入 LocalMachine\Root（机器级信任），
+            // 而私钥明文写在程序目录 cacert\fastgithub.key。程序目录常常是解压出来的
+            // 用户可写位置；服务模式下服务镜像又被强制限定到 Program Files（该目录
+            // Users 组默认可读）。一旦非管理员本地用户读到该私钥，即可伪造任意域名、
+            // 且被本机无条件信任的证书，形成越权 MITM。失败只记日志，不阻断启动。
+            // 用 OperatingSystem.IsWindows() 包住调用：CA1416 需要**编译期可见**的平台守卫，
+            // 只在被调方法内部做运行时判断不足以消除该警告。
+            if (OperatingSystem.IsWindows())
+            {
+                RestrictPrivateKeyAccess(this.CaKeyFilePath);
+            }
+
             var certPem = this.caCert.ExportCertificatePem();
             File.WriteAllText(this.CaCerFilePath, new string(certPem), Encoding.ASCII);
 
@@ -119,6 +135,68 @@ namespace FastGithub.HttpServer.Certs
                 this.CaCerFilePath, this.CaKeyFilePath);
 
             return true;
+        }
+
+        /// <summary>
+        /// [PATCH] 收紧 CA 私钥文件的访问控制：切断 ACL 继承，仅保留
+        /// SYSTEM、Administrators 与当前所有者三者。
+        ///
+        /// 为什么必须做：CA 被 CaCertInstallerOfWindows 装入 LocalMachine\Root，
+        /// 属**机器级信任**；而私钥明文写在程序目录的 cacert\fastgithub.key。
+        /// 程序目录常常是解压出来的用户可写位置，服务模式下服务镜像又被本项目的
+        /// 白名单强制限定到 Program Files（该目录 Users 组默认可读）。
+        /// 一旦非管理员本地用户读到该私钥，即可签发任意域名的证书且被本机无条件信任，
+        /// 等价于把机器的 TLS 信任链交给本地任意账户。
+        ///
+        /// 失败只记日志、不阻断启动：宁可私钥保持默认权限，也不能让程序起不来。
+        /// README 另提供手动加固命令作为兜底。
+        /// </summary>
+        /// <param name="filePath">私钥文件路径</param>
+        // 标注平台：整段实现用到 Windows-only 的 ACL API，不加标注会让每个调用点
+        // 各产生一条 CA1416 警告（与上游 ProxyConflictSolver 的写法一致）。
+        [SupportedOSPlatform("windows")]
+        private static void RestrictPrivateKeyAccess(string filePath)
+        {
+            if (OperatingSystem.IsWindows() == false)
+            {
+                return;
+            }
+
+            try
+            {
+                var fileInfo = new FileInfo(filePath);
+                var security = fileInfo.GetAccessControl();
+
+                // 先切断继承：父目录（Program Files 等）的宽松 ACL 会覆盖到私钥上，
+                // 只加拒绝规则不足以挡住继承来的允许规则。
+                security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+                foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+                {
+                    security.RemoveAccessRuleAll(rule);
+                }
+
+                security.AddAccessRule(new FileSystemAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                    FileSystemRights.FullControl, AccessControlType.Allow));
+
+                security.AddAccessRule(new FileSystemAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+                    FileSystemRights.FullControl, AccessControlType.Allow));
+
+                // 所有者通常是运行本程序的管理员账户，保留它以免把自己锁在外面
+                var owner = WindowsIdentity.GetCurrent().Owner;
+                if (owner != null)
+                {
+                    security.AddAccessRule(new FileSystemAccessRule(
+                        owner, FileSystemRights.FullControl, AccessControlType.Allow));
+                }
+
+                fileInfo.SetAccessControl(security);
+            }
+            catch (Exception)
+            {
+                // 忽略：收紧失败不影响功能，README 提供手动加固命令
+            }
         }
 
         /// <summary>
