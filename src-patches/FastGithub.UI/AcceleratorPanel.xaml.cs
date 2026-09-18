@@ -142,6 +142,14 @@ namespace FastGithub.UI
         // 当前已知的站点 key 列表（启用目录 + 停用目录的并集），用于统计风险提示
         private readonly List<string> siteKeys = new List<string>();
 
+        // [PATCH] WPF 切换选项卡会对内容元素 Unload/Re-Load，Loaded 每次切回都触发；
+        // 用该标记保证「重建清单 + 覆写 HF 配置 + 加载背景」只做一次。
+        private bool initialized;
+
+        // [PATCH] 连续快速勾选会并发触发「停引擎 + 起引擎」，导致反复断网与状态显示乱序。
+        // 用闸门把重启过程串行化（后到的调用排队执行，最终状态与最后一次勾选一致）。
+        private static readonly System.Threading.SemaphoreSlim restartGate = new System.Threading.SemaphoreSlim(1, 1);
+
         public AcceleratorPanel()
         {
             InitializeComponent();
@@ -151,6 +159,13 @@ namespace FastGithub.UI
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
             RefreshStatus();
+            // [PATCH] WPF 切换选项卡会重复触发 Loaded；重建清单与覆写配置只做一次，
+            // 否则每次切页都会覆盖用户手改的 huggingface 片段、丢失滚动位置。
+            if (this.initialized)
+            {
+                return;
+            }
+            this.initialized = true;
             RefreshSites();
             WriteHuggingFaceMirror();
             LoadBackground();
@@ -172,7 +187,7 @@ namespace FastGithub.UI
             {
                 if (Program.IsEngineRunning)
                     await Task.Run(() => Program.StopEngine());   // 优雅停机（内部等待并兜底强杀）
-                else if (Program.StartEngine() == false)
+                else if (await Task.Run(() => Program.StartEngine()) == false)   // [PATCH] verify 时会阻塞 1.5 秒，移到后台线程避免冻结 UI
                     ReportError("启动加速引擎", EngineStartFailureDetail);
                 await Task.Delay(300);
                 RefreshStatus();
@@ -286,8 +301,12 @@ namespace FastGithub.UI
 
             if (success == false)
             {
-                // 文件移动/写入失败：回滚勾选状态，避免 UI 与实际不一致。
-                // 此时不必重启引擎——配置没变，重启只会造成无谓的断网。
+                // [PATCH] 只回滚勾选会让 UI 与磁盘不一致（片段已启用但显示未勾选）：
+                // 启用路径是「先移文件、后写镜像配置」两步，第二步失败时第一步已生效，必须一并回滚。
+                if (turningOn)
+                {
+                    DisableFragment(key);
+                }
                 SetCheckedSilently(cb, !turningOn);
                 UpdateRiskHint();
                 UpdateHfHint();
@@ -417,6 +436,20 @@ namespace FastGithub.UI
                 return true;
             }
 
+            // [PATCH] 差异判断：本方法只负责把旧版「主站直连」片段迁移成镜像片段，
+            // 若已含镜像标记则无需重复写盘，避免每次切页/重载都覆盖用户手改的镜像配置。
+            try
+            {
+                if (File.ReadAllText(frag).IndexOf("hf-mirror.com", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+            catch
+            {
+                // 读取失败时按原逻辑继续尝试写入（写入路径自身有 try/catch 与报错）
+            }
+
             try
             {
                 File.WriteAllText(frag, MirrorHuggingFaceJson);
@@ -477,18 +510,26 @@ namespace FastGithub.UI
 
         private async Task ApplyAndRestart()
         {
-            if (Program.IsEngineRunning)
+            await restartGate.WaitAsync();
+            try
             {
-                await Task.Run(() => Program.StopEngine());   // 优雅停机（内部等待并兜底强杀）
-                await Task.Delay(200);
-                if (Program.StartEngine() == false)
+                if (Program.IsEngineRunning)
                 {
-                    // [PATCH] 原实现启动后零校验：引擎起不来时 UI 只是静默从「运行中」变「已停止」，
-                    // 用户会误以为仍在加速。这里必须显式告知。
-                    ReportError("重启加速引擎", EngineStartFailureDetail);
+                    await Task.Run(() => Program.StopEngine());   // 优雅停机（内部等待并兜底强杀）
+                    await Task.Delay(200);
+                    if (await Task.Run(() => Program.StartEngine()) == false)
+                    {
+                        // [PATCH] 原实现启动后零校验：引擎起不来时 UI 只是静默从「运行中」变「已停止」，
+                        // 用户会误以为仍在加速。这里必须显式告知。
+                        ReportError("重启加速引擎", EngineStartFailureDetail);
+                    }
                 }
+                RefreshStatus();
             }
-            RefreshStatus();
+            finally
+            {
+                restartGate.Release();
+            }
         }
 
         #region 辅助
@@ -618,8 +659,8 @@ namespace FastGithub.UI
             {
                 if (File.Exists(BackgroundCfg))
                 {
-                    var p = File.ReadAllText(BackgroundCfg).Trim();
-                    if (File.Exists(p)) File.Delete(p);
+                    var p = ResolveBackgroundPath(File.ReadAllText(BackgroundCfg).Trim());
+                    if (p != null) File.Delete(p);
                     File.Delete(BackgroundCfg);
                 }
             }
@@ -630,6 +671,27 @@ namespace FastGithub.UI
             ClearBackground();
         }
 
+        /// <summary>
+        /// [PATCH] 解析并校验背景图路径：只接受 ui-background/ 目录内的文件。
+        /// ui-background.txt 与程序同目录、而程序目录可能被普通用户写入；若直接信任其中的路径，
+        /// 攻击者可让管理员进程加载或删除任意文件。返回 null 表示路径不可信或文件不存在。
+        /// </summary>
+        private static string? ResolveBackgroundPath(string raw)
+        {
+            if (string.IsNullOrEmpty(raw))
+            {
+                return null;
+            }
+            var full = Path.GetFullPath(raw);
+            var dir = Path.GetDirectoryName(full);
+            if (File.Exists(full) &&
+                string.Equals(dir, Path.GetFullPath(BackgroundDir), StringComparison.OrdinalIgnoreCase))
+            {
+                return full;
+            }
+            return null;
+        }
+
         // 加载已保存的背景（若存在则应用，否则恢复默认）
         private void LoadBackground()
         {
@@ -637,15 +699,11 @@ namespace FastGithub.UI
             {
                 if (File.Exists(BackgroundCfg))
                 {
-                    var p = File.ReadAllText(BackgroundCfg).Trim();
                     // [PATCH] 只加载 ui-background/ 目录内的图片：ui-background.txt 与程序同目录、
                     // 而程序目录可能被普通用户写入；若直接信任其中的任意路径，攻击者可让管理员进程
-                    // 加载任意文件。这里把配置里的路径解析为绝对路径，并校验其所在目录必须等于
-                    // ui-background/ 目录本身（ChooseBackground_Click 只把图片写到该目录的直接子级）。
-                    var full = Path.GetFullPath(p);
-                    var dir = Path.GetDirectoryName(full);
-                    if (File.Exists(full) &&
-                        string.Equals(dir, Path.GetFullPath(BackgroundDir), StringComparison.OrdinalIgnoreCase))
+                    // 加载任意文件。校验逻辑与 ResetBackground_Click 共用 ResolveBackgroundPath。
+                    var full = ResolveBackgroundPath(File.ReadAllText(BackgroundCfg).Trim());
+                    if (full != null)
                     {
                         ApplyBackground(full);
                         return;

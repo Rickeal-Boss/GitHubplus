@@ -220,6 +220,7 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 | **覆盖式升级不收敛默认集** | 「默认只启用 GitHub 与 HuggingFace」只在**全新解压**时生效。若你在旧版本目录上直接覆盖解压，旧版已启用的站点片段仍留在 `appsettings/` 顶层继续生效 | 升级请用全新目录解压；或手动把不需要的 `appsettings.*.json` 移入 `appsettings/disabled/` |
 | **日志无容量上限** | `logs/log.txt` 按天滚动、不清理，记录访问过的**域名与路径**（不含 query） | `clean.cmd` 会一并删除 `logs/` |
 | **未配置域名也会被 MITM 转发** | 当某个域名被 DNS 投毒到 `127.0.0.1`（可能来自其他加速器如 Steam++，或被恶意 DNS 劫持），即使该域名**不在加速列表**，反向代理中间件也会用默认配置（`TlsSni=true`）解密并转发到真实主机。日志会打印"可能已经被DNS污染"警告。这意味着**本机 CA 的解密范围不限于你在 UI 里勾选的站点** | 不要同时运行其他会修改 DNS 的工具；若不需要加速，请停止引擎 |
+| **FallbackDns 的 TCP 53 被网络过滤（日志噪声）** | FallbackDns（`223.5.5.5:53` / `119.29.29.29:53`）的 TCP 53 在部分网络被过滤（RST / 超时），日志里原本每个 (域名, DNS) 组合每 10 分钟记一条 `FastGithub.DomainResolve.DnsClient` 的告警。解析主路径是内置 dnscrypt-proxy，不受影响，属纯噪声 | 已通过 `appsettings.json` 的 Serilog `MinimumLevel.Override` 把 `FastGithub.DomainResolve.DnsClient` 这个 context 降到 `Error`；**排查 DNS 问题时把它调回 `Warning` 即可恢复可见** |
 
 **私钥 ACL（可选自行加固）**：`cacert\fastgithub.key` 为明文，目录权限继承程序目录。若只想让当前用户与 SYSTEM 可读，可在程序目录执行：
 
@@ -286,6 +287,11 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 **不影响其他流量（关键，仅性能 / 拦截层面）**
 - 同时开着游戏 / 视频 / 其它网站，网络照常——不匹配的域名不被 WinDivert 拦截。
 - 若其它软件也变慢/断流：说明 WinDivert 过滤表达式或驱动异常，需排查（正常情况不应发生）。
+
+**版本号（v3.0.0）**
+- 本工具当前版本号为 **v3.0.0**。引擎启动横幅与 UI 标题**同源**，都取自 `Directory.Build.props` 的 `<Version>`（UI 标题读 `AssemblyInformationalVersionAttribute`）。
+- 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.0.0 ]======`；UI 窗口标题应为 `FastGithub.UI v3.0.0`。
+- 注意：`<Version>` 必须是**纯数字**（`3.0.0`）。写成 `3.0.0-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
 
 ---
 

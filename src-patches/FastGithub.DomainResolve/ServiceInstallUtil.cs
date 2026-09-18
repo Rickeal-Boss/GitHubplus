@@ -19,7 +19,11 @@ namespace FastGithub.DomainResolve
         /// <returns>允许安装时返回 true</returns>
         public static bool IsAllowedServiceBinaryPath(string binaryPath)
         {
-            var directory = Path.GetDirectoryName(binaryPath);
+            // [PATCH] 判定前必须规范化：GetDirectoryName 不做规范化，
+            // C:\Program Files\..\Users\Public\evil\x.exe 的字面目录以 C:\Program Files\ 开头会通过白名单，
+            // 而 InstallAndStartService 随后用 Path.GetFullPath(binaryPath) 建服务，实际镜像落在用户可写目录，
+            // 白名单失效（本地提权语义重现）。这里先规范化再取目录。
+            var directory = Path.GetDirectoryName(Path.GetFullPath(binaryPath));
             if (string.IsNullOrEmpty(directory))
             {
                 return false;

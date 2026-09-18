@@ -735,6 +735,108 @@ jobs:
           fi
           echo "  已确认 git 缺失时跳过配置（不再误告警）"
 
+          # [P3] 版本号 3.0.0：产品版本号（引擎启动横幅与 UI 标题同源）
+          F48="src/Directory.Build.props"
+          if [ ! -f "$F48" ]; then
+            echo "::error::[P3] 补丁未生效：$F48 不存在"
+            exit 1
+          fi
+          if ! grep -q "<Version>3.0.0</Version>" "$F48"; then
+            echo "::error::[P3] Directory.Build.props 版本号未升到 3.0.0"
+            exit 1
+          fi
+          if grep -q "2.1.5" "$F48"; then
+            echo "::error::[P3] Directory.Build.props 仍残留旧版本号 2.1.5"
+            exit 1
+          fi
+          echo "  已确认产品版本号已升到 3.0.0"
+
+          # [P3] 客户端主动中断降噪：不再记告警（IsError 已判为非错误）
+          F49="src/FastGithub.HttpServer/HttpMiddlewares/RequestLoggingMilldeware.cs"
+          if [ ! -f "$F49" ]; then
+            echo "::error::[2v] 补丁未生效：$F49 不存在"
+            exit 1
+          fi
+          if ! grep -q "LogDebug" "$F49"; then
+            echo "::error::[P3] 请求日志中间件未把客户端中断降级到 Debug"
+            exit 1
+          fi
+          if grep -q "LogWarning" "$F49"; then
+            echo "::error::[P3] 请求日志中间件仍存在告警级别日志（客户端主动中断会污染错误监控）"
+            exit 1
+          fi
+          echo "  已确认客户端主动中断不再记告警"
+
+          # [P3] DnsClient 降噪：FallbackDns TCP53 被网络过滤的噪声降到 Error
+          F50="src/FastGithub/appsettings.json"
+          if [ ! -f "$F50" ]; then
+            echo "::error::[2n] 补丁未生效：$F50 不存在"
+            exit 1
+          fi
+          if ! grep -q "FastGithub.DomainResolve.DnsClient" "$F50"; then
+            echo "::error::[P3] appsettings.json 未把 DnsClient context 降到 Error"
+            exit 1
+          fi
+          echo "  已确认 DnsClient 日志已降噪"
+
+          # [P3] 服务白名单规范化：判定前必须 Path.GetFullPath
+          F51="src/FastGithub.DomainResolve/ServiceInstallUtil.cs"
+          if [ ! -f "$F51" ]; then
+            echo "::error::[2aa] 补丁未生效：$F51 不存在"
+            exit 1
+          fi
+          if ! grep -q "Path.GetFullPath(binaryPath)" "$F51"; then
+            echo "::error::[P3] ServiceInstallUtil 未在判定前规范化镜像路径（.. 可绕过白名单）"
+            exit 1
+          fi
+          # 注意：仅 grep "Path.GetFullPath(binaryPath)" 无判别力——上游 CreateService 调用点本就含该子串。
+          # 必须再断言「判定前确实做了 GetDirectoryName(GetFullPath(...)) 规范化」，否则闸门恒真。
+          if ! grep -q "Path.GetDirectoryName(Path.GetFullPath(binaryPath))" "$F51"; then
+            echo "::error::[P3] ServiceInstallUtil 白名单判定前未对 binaryPath 规范化（.. 可绕过白名单）"
+            exit 1
+          fi
+          echo "  已确认服务镜像路径判定前已规范化"
+
+          # [P3] 背景图路径校验复用：Reset 与 Load 共用 ResolveBackgroundPath
+          F52="src/FastGithub.UI/AcceleratorPanel.xaml.cs"
+          if [ ! -f "$F52" ]; then
+            echo "::error::[2c] 补丁未生效：$F52 不存在"
+            exit 1
+          fi
+          if ! grep -q "ResolveBackgroundPath" "$F52"; then
+            echo "::error::[P3] 背景图路径校验方法 ResolveBackgroundPath 缺失"
+            exit 1
+          fi
+          if ! grep -q "ResolveBackgroundPath(File.ReadAllText(BackgroundCfg)" "$F52"; then
+            echo "::error::[P3] 恢复默认背景未复用路径校验（可删除任意文件）"
+            exit 1
+          fi
+          echo "  已确认背景图路径校验已复用（Reset 与 Load 同源）"
+
+          # [P3] 面板 Loaded 幂等：只初始化一次
+          F53="src/FastGithub.UI/AcceleratorPanel.xaml.cs"
+          if [ ! -f "$F53" ]; then
+            echo "::error::[2c] 补丁未生效：$F53 不存在"
+            exit 1
+          fi
+          if ! grep -q "initialized" "$F53"; then
+            echo "::error::[P3] 加速面板未做 Loaded 幂等（每次切页都会覆写 HF 配置）"
+            exit 1
+          fi
+          echo "  已确认加速面板 Loaded 已幂等"
+
+          # [P3] UI 引擎句柄兜底：并发下 HasExited 抛异常时安全返回
+          F54="src/FastGithub.UI/Program.cs"
+          if [ ! -f "$F54" ]; then
+            echo "::error::[2c] 补丁未生效：$F54 不存在"
+            exit 1
+          fi
+          if ! grep -q "catch (InvalidOperationException)" "$F54"; then
+            echo "::error::[P3] UI 引擎句柄读取未捕获 InvalidOperationException（并发下会崩溃）"
+            exit 1
+          fi
+          echo "  已确认 UI 引擎句柄读取已加并发兜底"
+
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
             exit 1

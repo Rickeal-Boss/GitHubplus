@@ -1,6 +1,9 @@
 <Project>
 	<PropertyGroup>
-		<Version>2.1.5</Version>	
+		<!-- [PATCH] 产品版本号：引擎启动横幅（ProductionVersion.Current）与 UI 标题（MainWindow.xaml.cs 读 AssemblyInformationalVersionAttribute）都取自这里。必须是纯数字版本：ProductionVersion.Parse 用 Version.Parse，写成 3.0.0-rc1 会抛 FormatException，引擎静态构造失败即启动崩溃。 -->
+		<Version>3.0.0</Version>
+		<!-- [PATCH] .NET 8+ SDK 默认会把 SourceLink 的 +<sha> 后缀拼进 InformationalVersion，会让 UI 标题显示成 v3.0.0+xxxxxxx；关掉后标题干净显示 v3.0.0。 -->
+		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>	
 		<Nullable>enable</Nullable>
 		<TargetFramework>net10.0</TargetFramework>
 		<IsWebConfigTransformDisabled>true</IsWebConfigTransformDisabled> 		

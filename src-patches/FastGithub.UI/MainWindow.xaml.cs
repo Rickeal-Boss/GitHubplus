@@ -16,6 +16,9 @@ namespace FastGithub.UI
     public partial class MainWindow : Window
     {
         private readonly System.Windows.Forms.NotifyIcon notifyIcon;
+        // [PATCH] 从 exe 提取出来的托盘图标从未释放：保存引用，在 OnClosed 里释放
+        // （仅在 ExtractAssociatedIcon 返回非 null 时记录；系统共享图标不在此列）。
+        private readonly System.Drawing.Icon? trayIcon;
         private const string FASTGITHUB_UI = "FastGithub.UI";
         private const string RELEASES_URI = "https://github.com/Rickeal-Boss/GitHubplus/releases";
 
@@ -31,12 +34,17 @@ namespace FastGithub.UI
 
             var version = this.GetType().Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
             this.Title = $"{FASTGITHUB_UI} v{version}";
+
+            // [PATCH] exe 无图标时 ExtractAssociatedIcon 会返回 null，托盘图标将不可见；
+            // 回退到系统共享图标 Application（不释放，属系统所有）。仅当提取成功才记录引用以便释放。
+            var extracted = System.Drawing.Icon.ExtractAssociatedIcon(System.Windows.Forms.Application.ExecutablePath);
+            this.trayIcon = extracted;
             this.notifyIcon = new System.Windows.Forms.NotifyIcon
             {
                 Visible = true,
                 Text = FASTGITHUB_UI,
                 ContextMenu = new System.Windows.Forms.ContextMenu(new[] { upgrade, exit }),
-                Icon = System.Drawing.Icon.ExtractAssociatedIcon(System.Windows.Forms.Application.ExecutablePath)
+                Icon = extracted ?? System.Drawing.SystemIcons.Application
             };
 
             // 左键单击托盘图标：还原并激活窗口
@@ -90,6 +98,8 @@ namespace FastGithub.UI
         {
             this.notifyIcon.Icon = null;
             this.notifyIcon.Dispose();
+            // [PATCH] 释放从 exe 提取的图标；系统共享图标（SystemIcons.Application）未记录在此，不会误释放。
+            this.trayIcon?.Dispose();
             base.OnClosed(e);
         }
     }

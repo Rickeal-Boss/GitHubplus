@@ -69,7 +69,12 @@ namespace FastGithub.HttpServer.HttpMiddlewares
             }
             else
             {
-                logger.LogWarning($"{request.Method} {request.Scheme}://{request.Host}{request.Path} responded {response.StatusCode} in {stopwatch.Elapsed.TotalMilliseconds} ms{Environment.NewLine}{GetMessage(exception)}");
+                // [PATCH] 客户端主动中断不是故障：IsError 已把 OperationCanceledException /
+                // ConnectionAbortedException 判为非错误，若此处仍按告警级别记录并附 3 行异常链，
+                // 会污染错误监控、误导排障方向。真机 pre18 日志实测 28 分钟出现 15 条
+                // （均为浏览器在 GitHub 新建仓库页做防抖名检查后主动 abort 的 check-name 请求）。
+                // 故降级为 Debug（当前 MinimumLevel 为 Information，默认不落盘）。
+                logger.LogDebug($"{request.Method} {request.Scheme}://{request.Host}{request.Path} responded {response.StatusCode} in {stopwatch.Elapsed.TotalMilliseconds} ms{Environment.NewLine}{GetMessage(exception)}");
             }
         }
 

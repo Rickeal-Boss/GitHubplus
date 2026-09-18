@@ -224,7 +224,28 @@ namespace FastGithub.UI
         /// <summary>
         /// 加速引擎是否正在运行
         /// </summary>
-        internal static bool IsEngineRunning => EngineProcess != null && EngineProcess.HasExited == false;
+        internal static bool IsEngineRunning
+        {
+            get
+            {
+                // [PATCH] 原为无锁表达式属性：两次读取静态字段，EngineProcess 可能在两次读取之间
+                // 被 StopEngine 置空或 Dispose，导致 NullReferenceException / InvalidOperationException
+                // 打到 UI 线程上直接崩溃。这里单次读取到局部变量消除前者，try/catch 覆盖后者。
+                // 注意：此处刻意不加锁——StopEngine 持锁最长约 7 秒（锚点等待 2s + WaitForExit 5s），
+                // 而本属性会被 UI 线程的 RefreshStatus() 调用（每次切换选项卡都会触发），
+                // 加锁会把 UI 阻塞数秒。读到的旧引用即使已被 Dispose，也只会走 catch 返回 false，
+                // 语义上等价于「正在停止 = 未运行」，无副作用。
+                try
+                {
+                    var process = EngineProcess;
+                    return process != null && process.HasExited == false;
+                }
+                catch (InvalidOperationException)
+                {
+                    return false;
+                }
+            }
+        }
 
         /// <summary>
         /// 启动加速引擎（若已在运行则忽略）
@@ -276,6 +297,11 @@ namespace FastGithub.UI
                 if (process == null)
                 {
                     return false;
+                }
+                // [PATCH] 引擎可能已自行退出（启动期 verify:false 或引擎崩溃），旧 Process 句柄需先释放再覆盖。
+                if (EngineProcess != null)
+                {
+                    try { EngineProcess.Dispose(); } catch { }
                 }
                 EngineProcess = process;
 
@@ -421,13 +447,29 @@ namespace FastGithub.UI
             {
                 return;
             }
+
+            // [PATCH] 必须同时覆盖两种失败形态：Process.Start 既可能抛异常、也可能返回 null。
+            // 原 `StartAnchor(true) ?? StartAnchor(false)` 只覆盖后者（异常会被外层 catch 吞掉），
+            // 上一版改成 try/catch 后只覆盖前者 —— 两种写法都不完整。
             try
             {
-                _anchorProcess = StartAnchor(redirect: true) ?? StartAnchor(redirect: false);
+                _anchorProcess = StartAnchor(redirect: true);
             }
             catch
             {
                 _anchorProcess = null;
+            }
+
+            if (_anchorProcess == null)
+            {
+                try
+                {
+                    _anchorProcess = StartAnchor(redirect: false);
+                }
+                catch
+                {
+                    _anchorProcess = null;
+                }
             }
         }
 
