@@ -4,7 +4,7 @@
 
 > 自用本地加速工具。加速目标：**GitHub 主站（核心）+ HuggingFace（需加速）**，GreasyFork 已剔除。
 > 底座：`creazyboyone/FastGithub`（原 dotnetcore/FastGithub，纯 .NET，AOT/Trimmed 单文件，WinDivert 包层拦截）。
-> 本目录只含**自建所需的配置文件与说明**，加速内核直接复用 FastGithub，无需重写代理/MITM/证书/DNS 逻辑。
+> 本目录只含**自建所需的配置文件与说明**，加速内核直接复用 FastGithub 并进行全面修复及重构，网络安全针对性加强，无需重写代理/MITM/证书/DNS 逻辑。
 
 ---
 
