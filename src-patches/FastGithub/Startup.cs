@@ -1,4 +1,5 @@
 using FastGithub.Configuration;
+using FastGithub.DomainResolve;
 using FastGithub.FlowAnalyze;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -118,6 +119,9 @@ namespace FastGithub
         [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DomainConfig))]
         [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ResponseConfig))]
         [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(FastGithubOptions))]
+        // [PATCH] DnscryptLifecycleOptions 不需要 DynamicDependency：它的绑定走
+        // DnscryptLifecycleOptions.Bind 的手动读取（见 AddDnscryptLifecycle），
+        // 属性 setter 被 lambda 静态引用，不会被裁剪。
         public static void ConfigureServices(this WebApplicationBuilder builder)
         {
             var services = builder.Services;
@@ -128,6 +132,16 @@ namespace FastGithub
 
             services.AddConfiguration();
             services.AddDomainResolve();
+
+            // [PATCH] dnscrypt-proxy 优雅停机与网络看护
+            services.AddDnscryptLifecycle(configuration);
+            if (OperatingSystem.IsWindows())
+            {
+                // 注销 / 关机 / 关闭控制台窗口时，.NET 的 ConsoleLifetime 不会停主机，
+                // 这里补一个控制台事件处理器，保证 dnscrypt-proxy 能被优雅停机
+                services.AddHostedService<DnscryptShutdownWatcher>();
+            }
+
             services.AddHttpClient();
             services.AddReverseProxy();
             services.AddFlowAnalyze();

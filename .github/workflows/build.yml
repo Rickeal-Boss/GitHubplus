@@ -2,7 +2,7 @@ name: Build Windows Portable
 
 on:
   push:
-    branches: [ main ]
+    branches: [ fix ]
     tags: [ 'v*' ]
   workflow_dispatch:
 
@@ -896,6 +896,103 @@ jobs:
             exit 1
           fi
           echo "  已确认加速面板相关文件存在且已被主窗体引用"
+
+          # [2ah] dnscrypt-proxy 优雅停机 + 断网看护 + 注销/关机钩子。
+          # 这一组断言的意义：优雅停机是 hosts 还原 / 代理绕过表清理的前置条件，
+          # 补丁没生效就等于把「注销即残留」重新放回主干，必须硬失败。
+          F58="src/FastGithub.DomainResolve/DnscryptProxy.cs"
+          if [ ! -f "$F58" ]; then
+            echo "::error::[2ah] 补丁未生效：$F58 不存在"
+            exit 1
+          fi
+          if ! grep -q "StopService" "$F58"; then
+            echo "::error::[2ah] 补丁未生效：服务模式未按优雅顺序停机（未调用 StopService 等待 SERVICE_STOPPED）"
+            exit 1
+          fi
+          if ! grep -q "ReleaseJob" "$F58"; then
+            echo "::error::[2ah] 补丁未生效：未释放 Job Object 句柄（停机兜底与句柄泄漏修复缺失）"
+            exit 1
+          fi
+          if ! grep -q "IsPortBindable" "$F58"; then
+            echo "::error::[2ah] 补丁未生效：停机后重启仍会用启动期端口快照，可能绑到已被占用的端口"
+            exit 1
+          fi
+          if ! grep -q "CREATE_NEW_PROCESS_GROUP" "$F58"; then
+            echo "::error::[2ah] 补丁未生效：dnscrypt-proxy 未按进程组启动，CTRL_BREAK 软停机信号无法定向送达"
+            exit 1
+          fi
+          if ! grep -q "ReferenceEquals" "$F58"; then
+            echo "::error::[2ah] 补丁未生效：Exited 回调缺少实例守卫，旧进程迟到事件会清掉新端点"
+            exit 1
+          fi
+          echo "  已确认 dnscrypt-proxy 优雅停机补丁生效"
+
+          F59="src/FastGithub.DomainResolve/NetworkWatchService.cs"
+          if [ ! -f "$F59" ]; then
+            echo "::error::[2ah] 补丁未生效：$F59 不存在（断网看护缺失）"
+            exit 1
+          fi
+          if ! grep -q "OfflineConfirmThreshold" "$F59"; then
+            echo "::error::[2ah] 断网看护缺少抖动抑制阈值，会引发停机/重启风暴"
+            exit 1
+          fi
+          if ! grep -q "ClearCaches" "$F59"; then
+            echo "::error::[2ah] 网络恢复后未清 DNS 失败缓存，最长 10 分钟空解析"
+            exit 1
+          fi
+          F59B="src/FastGithub.DomainResolve/DnsClient.cs"
+          if [ ! -f "$F59B" ]; then
+            echo "::error::[2ah] 补丁未生效：$F59B 不存在（ClearCaches 缺失）"
+            exit 1
+          fi
+          if ! grep -q "public void ClearCaches" "$F59B"; then
+            echo "::error::[2ah] DnsClient.ClearCaches 缺失，断网期失败缓存无法清空"
+            exit 1
+          fi
+          F60="src/FastGithub/DnscryptShutdownWatcher.cs"
+          if [ ! -f "$F60" ]; then
+            echo "::error::[2ah] 补丁未生效：$F60 不存在（注销/关机时无优雅停机钩子）"
+            exit 1
+          fi
+          if ! grep -q "SetConsoleCtrlHandler" "$F60"; then
+            echo "::error::[2ah] 注销/关机钩子未注册控制台事件处理器"
+            exit 1
+          fi
+          if ! grep -q "CTRL_LOGOFF_EVENT" "$F60"; then
+            echo "::error::[2ah] 注销/关机钩子未覆盖 CTRL_LOGOFF_EVENT"
+            exit 1
+          fi
+          F61="src/FastGithub.UI/Program.cs"
+          if [ ! -f "$F61" ]; then
+            echo "::error::[2ah] 补丁未生效：$F61 不存在"
+            exit 1
+          fi
+          if ! grep -q "app.SessionEnding" "$F61"; then
+            echo "::error::[2ah] UI 未接 SessionEnding，注销时引擎只能被系统强杀"
+            exit 1
+          fi
+          if ! grep -q "NotifySessionEnding" "$F61"; then
+            echo "::error::[2ah] UI 的 SessionEnding 未转发到引擎优雅停机路径"
+            exit 1
+          fi
+          F62="src/FastGithub/Startup.cs"
+          if [ ! -f "$F62" ]; then
+            echo "::error::[2ah] 补丁未生效：$F62 不存在"
+            exit 1
+          fi
+          if ! grep -q "AddDnscryptLifecycle" "$F62"; then
+            echo "::error::[2ah] 优雅停机与网络看护未注册到 DI（AddDnscryptLifecycle 缺失）"
+            exit 1
+          fi
+          if ! grep -q '"DnscryptLifecycle"' "src/FastGithub/appsettings.json"; then
+            echo "::error::[2ah] appsettings.json 缺少 DnscryptLifecycle 配置节（停机预算与看护阈值无处可配）"
+            exit 1
+          fi
+          if ! grep -q "DnscryptLifecycleOptions.Bind" "src/FastGithub.DomainResolve/NetworkWatchService.cs"; then
+            echo "::error::[2ah] 生命周期配置未走手动绑定（ConfigurationBinder 反射路径在 PublishTrimmed 下会静默丢值）"
+            exit 1
+          fi
+          echo "  已确认 断网看护 / 注销关机钩子 / DI 注册 / 裁剪兜底 全部生效"
 
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"

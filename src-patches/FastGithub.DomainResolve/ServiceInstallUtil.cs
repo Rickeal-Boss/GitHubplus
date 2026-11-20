@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.Versioning;
+using System.Threading;
 using static PInvoke.AdvApi32;
 
 namespace FastGithub.DomainResolve
@@ -125,6 +127,90 @@ namespace FastGithub.DomainResolve
         [SupportedOSPlatform("windows")]
         public static bool StopAndDeleteService(string serviceName)
         {
+            // [PATCH] 拆为「先优雅停、再删除」：原实现 ControlService(STOP) 后立刻 DeleteService，
+            // 不等 SERVICE_STOPPED —— 删除与停止竞态，服务记录先没了，进程归宿交给运气。
+            StopService(serviceName, DEFAULT_STOP_TIMEOUT_MS);
+            return DeleteService(serviceName);
+        }
+
+        /// <summary>
+        /// 默认停机预算（毫秒）
+        /// </summary>
+        private const int DEFAULT_STOP_TIMEOUT_MS = 3000;
+
+        /// <summary>
+        /// [PATCH] 发送 SERVICE_CONTROL_STOP 并等待服务真正进入 SERVICE_STOPPED。
+        /// 这是 dnscrypt-proxy 唯一真正的优雅停机通道（它内部把 SCM 的 STOP 映射到自己的
+        /// 退出流程，会先把监听 socket 收尾干净）。
+        /// </summary>
+        /// <param name="serviceName">服务名</param>
+        /// <param name="timeoutMs">等待预算，超时即返回 false 交由调用方兜底</param>
+        /// <returns>已停止（或本就不存在）返回 true</returns>
+        [SupportedOSPlatform("windows")]
+        public static bool StopService(string serviceName, int timeoutMs = DEFAULT_STOP_TIMEOUT_MS)
+        {
+            using var hSCManager = OpenSCManager(null, null, ServiceManagerAccess.SC_MANAGER_ALL_ACCESS);
+            if (hSCManager.IsInvalid == true)
+            {
+                return false;
+            }
+
+            using var hService = OpenService(hSCManager, serviceName, ServiceAccess.SERVICE_ALL_ACCESS);
+            if (hService.IsInvalid == true)
+            {
+                // 服务不存在，无需停止
+                return true;
+            }
+
+            var status = new SERVICE_STATUS();
+            if (QueryServiceStatus(hService, ref status) == false)
+            {
+                return false;
+            }
+            if (status.dwCurrentState == ServiceState.SERVICE_STOPPED)
+            {
+                return true;
+            }
+
+            var stopPending = status.dwCurrentState == ServiceState.SERVICE_STOP_PENDING;
+            if (stopPending == false &&
+                ControlService(hService, ServiceControl.SERVICE_CONTROL_STOP, ref status) == false)
+            {
+                return false;
+            }
+
+            // 尊重服务自己声明的 dwWaitHint：在它声称需要的时间里先不打扰，避免无谓轮询
+            var waitHintMs = status.dwWaitHint > 0
+                ? (int)Math.Min(status.dwWaitHint, (uint)Math.Max(200, timeoutMs))
+                : 150;
+            Thread.Sleep(Math.Max(50, waitHintMs));
+
+            var sw = Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < timeoutMs)
+            {
+                if (QueryServiceStatus(hService, ref status) == false)
+                {
+                    return false;
+                }
+                if (status.dwCurrentState == ServiceState.SERVICE_STOPPED)
+                {
+                    return true;
+                }
+                Thread.Sleep(100);
+            }
+
+            // 预算内仍未 STOPPED：最后读一次状态，给刚好卡在边界的情况一个机会
+            return QueryServiceStatus(hService, ref status) && status.dwCurrentState == ServiceState.SERVICE_STOPPED;
+        }
+
+        /// <summary>
+        /// [PATCH] 删除服务定义（不先停止，调用方负责停机）
+        /// </summary>
+        /// <param name="serviceName"></param>
+        /// <returns></returns>
+        [SupportedOSPlatform("windows")]
+        public static bool DeleteService(string serviceName)
+        {
             using var hSCManager = OpenSCManager(null, null, ServiceManagerAccess.SC_MANAGER_ALL_ACCESS);
             if (hSCManager.IsInvalid == true)
             {
@@ -137,17 +223,37 @@ namespace FastGithub.DomainResolve
                 return true;
             }
 
-            var status = new SERVICE_STATUS();
-            if (QueryServiceStatus(hService, ref status) == true)
+            return PInvoke.AdvApi32.DeleteService(hService);
+        }
+
+        /// <summary>
+        /// [PATCH] 启动已存在的服务（断网恢复时避开「删服务 + 重建」的 SCM 抖动）。
+        /// </summary>
+        /// <param name="serviceName"></param>
+        /// <returns>服务存在且已启动 / 本就在跑返回 true；不存在或启动失败返回 false</returns>
+        [SupportedOSPlatform("windows")]
+        public static bool TryStartExistingService(string serviceName)
+        {
+            using var hSCManager = OpenSCManager(null, null, ServiceManagerAccess.SC_MANAGER_ALL_ACCESS);
+            if (hSCManager.IsInvalid == true)
             {
-                if (status.dwCurrentState != ServiceState.SERVICE_STOP_PENDING &&
-                    status.dwCurrentState != ServiceState.SERVICE_STOPPED)
-                {
-                    ControlService(hService, ServiceControl.SERVICE_CONTROL_STOP, ref status);
-                }
+                return false;
             }
 
-            return DeleteService(hService);
+            using var hService = OpenService(hSCManager, serviceName, ServiceAccess.SERVICE_ALL_ACCESS);
+            if (hService.IsInvalid == true)
+            {
+                return false;
+            }
+
+            var status = new SERVICE_STATUS();
+            if (QueryServiceStatus(hService, ref status) &&
+                (status.dwCurrentState == ServiceState.SERVICE_RUNNING || status.dwCurrentState == ServiceState.SERVICE_START_PENDING))
+            {
+                return true;
+            }
+
+            return StartService(hService, 0, null);
         }
     }
 }

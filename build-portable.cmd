@@ -284,6 +284,27 @@ echo [2ag] 注入 ssh/git 反向代理 Socket 句柄泄漏补丁（ownsSocket: f
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\TcpMiddlewares\TcpReverseProxyHandler.cs" "%SRC%\FastGithub.HttpServer\TcpMiddlewares\TcpReverseProxyHandler.cs"
 if errorlevel 1 goto :fail
 
+echo [2ah] 注入 dnscrypt-proxy 优雅停机 + 断网看护补丁（注销/关机/无网不再硬杀）
+:: 三件事：① DnscryptProxy 把 Stop() 的「直接 process.Kill()」改为带预算的优雅停机
+::   （服务形态等 SERVICE_STOPPED，进程形态先投软信号再兜底强杀），并修掉 Job 句柄泄漏、
+::   端口启动期快照导致的端口漂移、服务进程误杀第三方 dnscrypt 等问题；
+::   ② 新增 NetworkWatchService：连续判定无网则优雅暂停 dnscrypt，网络恢复后自动拉起
+::      并清空断网期写入的 DNS 失败缓存（DnsClient.ClearCaches，否则恢复后最长 10 分钟空解析）；
+::   ③ 新增 DnscryptShutdownWatcher + UI 的 SessionEnding：注销/关机时真正走一次优雅停机
+::   （.NET 的 ConsoleLifetime 只认 Ctrl+C/Ctrl+Break，注销/关机/关窗口原本直接被终止）。
+:: 新增文件需要显式拷贝；已被前面步骤覆盖的文件（DnscryptProxy/ServiceInstallUtil/
+:: DomainResolveHostedService/Startup/appsettings.json/UI Program.cs）在各自步骤里已 copy，此处只补新增。
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DnscryptState.cs" "%SRC%\FastGithub.DomainResolve\DnscryptState.cs"
+if errorlevel 1 goto :fail
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DnsClient.cs" "%SRC%\FastGithub.DomainResolve\DnsClient.cs"
+if errorlevel 1 goto :fail
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\ProcessGracefulStop.cs" "%SRC%\FastGithub.DomainResolve\ProcessGracefulStop.cs"
+if errorlevel 1 goto :fail
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\NetworkWatchService.cs" "%SRC%\FastGithub.DomainResolve\NetworkWatchService.cs"
+if errorlevel 1 goto :fail
+copy /Y "%SCRIPT_DIR%src-patches\FastGithub\DnscryptShutdownWatcher.cs" "%SRC%\FastGithub\DnscryptShutdownWatcher.cs"
+if errorlevel 1 goto :fail
+
 echo [3/6] 注入加速配置（HuggingFace 镜像；GitHub collector 片段已在 [2w] 覆盖）
 copy /Y "%SCRIPT_DIR%appsettings.huggingface.json" "%SRC%\FastGithub\appsettings\" || goto :fail
 

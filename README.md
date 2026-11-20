@@ -22,6 +22,7 @@
 | 启动/停止加速开关 | UI「加速」页一键启停 `fastgithub.exe` 子进程 | **`src-patches/` 补丁（本工具新增）** |
 | 勾选要加速的网址 | UI 复选框启用/停用 `appsettings/*.json` 片段（Watt Toolkit 风格） | **`src-patches/` 补丁（本工具新增）** |
 | HuggingFace 镜像加速 | UI 单一镜像模式（`hf-mirror.com`），已去除主站直连 beta | **`src-patches/` 补丁（本工具新增）** |
+| 注销 / 断网时 dnscrypt-proxy 优雅停机与恢复自启 | 注销/关机走完整停机链（软信号 + hosts/代理表还原）；断网优雅暂停、恢复自动拉起并清失败缓存 | **`src-patches/` 补丁（本工具新增，v3.1.0）** |
 
 ---
 
@@ -146,6 +147,13 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 - **界面背景（自定义 UI 背景）**：加速选项卡底部可「选择图片…」导入本地图片作为**全局 UI 背景**（四个选项卡内容改为透明以透出背景），「恢复默认」即回到原始背景。所选图片拷入 `ui-background/` 目录，路径持久化于 `ui-background.txt`，下次启动自动还原；图片加载失败或清空时自动回退默认背景。
 
 > 所有改动即时写入 `appsettings/` 目录并重启引擎；关闭软件时引擎随之退出。下次启动按文件现状恢复（勾选状态持久化在片段所在位置中）。
+
+### 注销 / 断网时的生命周期（v3.1.0）
+
+- **系统注销 / 关机**：引擎侧注册 `SetConsoleCtrlHandler`（`CTRL_LOGOFF` / `CTRL_SHUTDOWN` / `CTRL_CLOSE`）+ UI 侧 `Application.SessionEnding` 双路触发，在系统宽限窗口内执行优雅停机：先向 `dnscrypt-proxy` 投递 `CTRL_BREAK` 软信号（以进程组启动、可定向送达；投递失败自动落强杀兜底），再走完整 `host.StopAsync()` 级联（hosts 还原、`ProxyOverride` 回滚、WinDivert 卸载）。服务模式（`fastgithub.exe start`）不受注销影响，停机交由 SCM。
+- **断网**：连续探测判定网络不可用后，优雅暂停 `dnscrypt-proxy`（引擎常驻，加速主链路与系统改动不动）；期间域名拨测自动跳过，不空转刷日志。
+- **恢复**：网络恢复后自动重新拉起 `dnscrypt-proxy` 并清空断网期写入的 DNS 失败缓存（否则最长 10 分钟空解析）。**用户手动点过「停止加速」的不会被自动恢复**。
+- 停机预算、软信号开关、看护周期与抖动阈值在 `appsettings.json` 的 `DnscryptLifecycle` 节可配（预算上限 4000ms，防配置拖死注销窗口）。
 
 ---
 
@@ -319,9 +327,9 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyon
 
 ## 11. GitHub Actions 自动构建（CI）
 
-仓库已配置 `.github/workflows/build.yml`：推送 `main`（或 tag、或手动）即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip`。
+仓库已配置 `.github/workflows/build.yml`：推送 `fix`（或 tag、或手动）即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip`。
 
-- ⚠️ **更正（此前表述有误）**：**只有打 `v*` tag 才会发布 Release**。推送 `main` / 手动触发只会执行构建与断言，并把 zip 作为 **Artifact** 上传（保留 7 天），**不会**创建或更新 Release，也不存在 `ci-<运行号>` 这类标签。发布逻辑见 `build.yml` 的 `Publish Release (仅 tag 触发)` 步（条件 `startsWith(github.ref,'refs/tags/v')`）。
+- ⚠️ **更正（此前表述有误）**：**只有打 `v*` tag 才会发布 Release**。推送 `fix` / 手动触发只会执行构建与断言，并把 zip 作为 **Artifact** 上传（保留 7 天），**不会**创建或更新 Release，也不存在 `ci-<运行号>` 这类标签。发布逻辑见 `build.yml` 的 `Publish Release (仅 tag 触发)` 步（条件 `startsWith(github.ref,'refs/tags/v')`）。
 - **打 `v*` tag**（如 `v3.0.0`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。
 - 构建时自动把托盘右键"检测更新"跳转链接指向本仓库 `Rickeal-Boss/GitHubplus`：`build-portable.cmd` 的 `[2b]` 步**整文件覆盖** `FastGithub.UI/MainWindow.xaml.cs`（上游原版指向 `dotnetcore/FastGithub`），并非字符串 patch；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 覆盖进克隆源码，新增「加速」标签页与加速控制面板）。
 - **上游供应链已 pin**：上游 `creazyboyone/FastGithub` 已固定到已审计的 commit `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（2025-08-01）。构建脚本 `build-portable.cmd` 只按这个 SHA 精确拉取，并在拉取后校验 `git rev-parse HEAD` 与之相等，不等即失败。**要升级上游版本，必须显式修改 `build-portable.cmd` 顶部的 `UPSTREAM_COMMIT`**——CI 里也有一道断言，改动该行会被校验。原 `dotnetcore/FastGithub` 已删库、现 fork 不再维护，切勿回到「追最新代码」的做法。

@@ -60,6 +60,15 @@ namespace FastGithub.UI
             var app = new Application();
             app.StartupUri = new Uri(MAIN_WINDOWS, UriKind.Relative);
             app.Exit += (s, e) => DetachEngineOnExit();   // UI 退出时让 fastgithub 自行优雅停机
+
+            // [PATCH] 注销 / 关机：GUI 进程收不到控制台的 CTRL_LOGOFF_EVENT，
+            // 但 WPF 会把 WM_QUERYENDSESSION / WM_ENDSESSION 包成 Application.SessionEnding。
+            // 不接这个事件，引擎只能等系统按 WaitToKillAppTimeout 到时强杀，
+            // dnscrypt-proxy、hosts、代理绕过表都无从收尾。这里只杀锚点，
+            // 让引擎走它已有的「父进程退出 -> host.StopAsync()」优雅停机路径。
+            // 刻意不设 e.Cancel：加速工具不该拦住用户注销；也不能在这里久留，
+            // 处理器返回后系统就要收窗口（引擎侧另有 CTRL_LOGOFF 与 Job Object 两层兜底）。
+            app.SessionEnding += (s, e) => { try { NotifySessionEnding(); } catch { } };
             // [PATCH] UI 崩溃兜底：app.Exit 只在正常退出时触发，未处理异常直接崩掉时不会走到它。
             // 此时 ping 锚点进程（UI 的子进程）不会随 UI 退出而自动终止（Windows 不级联杀子进程），
             // 引擎会一直误以为父进程还活着而残留占用端口。这里挂两个兜底：先立即强停引擎
@@ -316,6 +325,48 @@ namespace FastGithub.UI
                 }
 
                 return true;
+            }
+        }
+
+        /// <summary>
+        /// [PATCH] 注销 / 关机通知（由 MainWindow.OnSessionEnding 调用）。
+        ///
+        /// 为何需要它：GUI 子系统进程收不到控制台的 CTRL_LOGOFF_EVENT / CTRL_SHUTDOWN_EVENT，
+        /// 只能靠 WM_ENDSESSION（WPF 的 Window.SessionEnding）感知。
+        /// 为何不走完整 StopEngine(graceful:true)：那条路径最长要等 2s + 5s，
+        /// 而注销/关机给应用的收尾窗口只有几秒，卡在这里会让 UI 自己被系统强杀，
+        /// 反而把引擎留成无人管的孤儿。这里只做最关键的一步：杀掉锚点进程，
+        /// 让引擎自己的「父进程已退出 -> host.StopAsync」与引擎侧的 SetConsoleCtrlHandler 两条路径
+        /// 去跑完整优雅停机（dnscrypt-proxy 服务/子进程、hosts 还原、代理绕过表清理），
+        /// 再给最多 1.5 秒观察窗口；超时就返回，把收尾交给系统。
+        /// </summary>
+        internal static void NotifySessionEnding()
+        {
+            try
+            {
+                TryKillAnchor();
+            }
+            catch
+            {
+                // 注销路径上任何异常都不能阻止窗口关闭，否则系统会弹「该程序没响应」并强杀
+            }
+
+            var sw = Stopwatch.StartNew();
+            var engine = EngineProcess;
+            while (sw.ElapsedMilliseconds < 1500)
+            {
+                try
+                {
+                    if (engine == null || engine.HasExited)
+                    {
+                        break;
+                    }
+                }
+                catch
+                {
+                    break;
+                }
+                Thread.Sleep(100);
             }
         }
 
