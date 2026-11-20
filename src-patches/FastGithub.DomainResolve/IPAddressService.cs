@@ -197,7 +197,11 @@ namespace FastGithub.DomainResolve
         {
             // 先收集再删，避免在任何 MemoryCache 实现上出现「枚举中修改」的歧义
             var staleKeys = new List<object>();
-            foreach (var item in this.addressElapsedCache)
+            // [0007-fix] MemoryCache 只显式实现非泛型 IEnumerable（GetEnumerator 为显式接口实现），
+            // 直接 foreach MemoryCache 类型变量编译失败（CI 实测：CS01579 does not contain public GetEnumerator）。
+            // cast 到 IEnumerable 并用 KeyValuePair<object, object> 显式类型枚举：MemoryCache.GetEnumerator()
+            // 的 Current 运行时即 KeyValuePair<object, object>（CacheEntry 转换而来），类型安全。
+            foreach (KeyValuePair<object, object> item in (System.Collections.IEnumerable)this.addressElapsedCache)
             {
                 if (item.Value is AddressElapsed elapsed && elapsed.Elapsed == TimeSpan.MaxValue)
                 {
