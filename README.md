@@ -312,10 +312,10 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 同时开着游戏 / 视频 / 其它网站，网络照常——不匹配的域名不被 WinDivert 拦截。
 - 若其它软件也变慢/断流：说明 WinDivert 过滤表达式或驱动异常，需排查（正常情况不应发生）。
 
-**版本号（v3.0.0）**
-- 本工具当前版本号为 **v3.0.0**。引擎启动横幅与 UI 标题**同源**，都取自 `Directory.Build.props` 的 `<Version>`（UI 标题读 `AssemblyInformationalVersionAttribute`）。
-- 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.0.0 ]======`；UI 窗口标题应为 `FastGithub.UI v3.0.0`。
-- 注意：`<Version>` 必须是**纯数字**（`3.0.0`）。写成 `3.0.0-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
+**版本号（v3.1.0）**
+- 本工具当前版本号为 **v3.1.0**。引擎启动横幅与 UI 标题**同源**，都取自 `Directory.Build.props` 的 `<Version>`（UI 标题读 `AssemblyInformationalVersionAttribute`）。
+- 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.1.0 ]======`；UI 窗口标题应为 `FastGithub.UI v3.1.0`。
+- 注意：`<Version>` 必须是**纯数字**（`3.1.0`）。写成 `3.1.0-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
 
 ---
 

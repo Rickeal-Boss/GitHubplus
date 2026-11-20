@@ -743,21 +743,21 @@ jobs:
           fi
           echo "  已确认 git 缺失时跳过配置（不再误告警）"
 
-          # [P3] 版本号 3.0.0：产品版本号（引擎启动横幅与 UI 标题同源）
+          # [P3] 版本号 3.1.0：产品版本号（引擎启动横幅与 UI 标题同源）
           F48="src/Directory.Build.props"
           if [ ! -f "$F48" ]; then
             echo "::error::[P3] 补丁未生效：$F48 不存在"
             exit 1
           fi
-          if ! grep -q "<Version>3.0.0</Version>" "$F48"; then
-            echo "::error::[P3] Directory.Build.props 版本号未升到 3.0.0"
+          if ! grep -q "<Version>3.1.0</Version>" "$F48"; then
+            echo "::error::[P3] Directory.Build.props 版本号未升到 3.1.0"
             exit 1
           fi
           if grep -q "2.1.5" "$F48"; then
             echo "::error::[P3] Directory.Build.props 仍残留旧版本号 2.1.5"
             exit 1
           fi
-          echo "  已确认产品版本号已升到 3.0.0"
+          echo "  已确认产品版本号已升到 3.1.0"
 
           # [P3] 客户端主动中断降噪：不再记告警（IsError 已判为非错误）
           F49="src/FastGithub.HttpServer/HttpMiddlewares/RequestLoggingMilldeware.cs"
