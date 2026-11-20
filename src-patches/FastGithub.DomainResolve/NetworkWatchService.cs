@@ -34,6 +34,7 @@ namespace FastGithub.DomainResolve
     {
         private readonly IDnscryptProxyController controller;
         private readonly DnsClient dnsClient;
+        private readonly IPAddressService addressService;
         private readonly IOptionsMonitor<DnscryptLifecycleOptions> lifecycleOptions;
         private readonly IOptions<FastGithubOptions> fastGithubOptions;
         private readonly IHostApplicationLifetime lifetime;
@@ -75,6 +76,7 @@ namespace FastGithub.DomainResolve
         public NetworkWatchService(
             IDnscryptProxyController controller,
             DnsClient dnsClient,
+            IPAddressService addressService,
             IOptionsMonitor<DnscryptLifecycleOptions> lifecycleOptions,
             IOptions<FastGithubOptions> fastGithubOptions,
             IHostApplicationLifetime lifetime,
@@ -82,6 +84,7 @@ namespace FastGithub.DomainResolve
         {
             this.controller = controller;
             this.dnsClient = dnsClient;
+            this.addressService = addressService;
             this.lifecycleOptions = lifecycleOptions;
             this.fastGithubOptions = fastGithubOptions;
             this.lifetime = lifetime;
@@ -109,34 +112,54 @@ namespace FastGithub.DomainResolve
             {
                 while (stoppingToken.IsCancellationRequested == false)
                 {
-                    await this.WaitNextRoundAsync(interval, stoppingToken);
-                    if (stoppingToken.IsCancellationRequested)
+                    try
+                    {
+                        await this.WaitNextRoundAsync(interval, stoppingToken);
+                        if (stoppingToken.IsCancellationRequested)
+                        {
+                            break;
+                        }
+
+                        var online = await this.IsOnlineAsync(stoppingToken);
+                        this.lastProbeTick = Environment.TickCount64;
+                        if (online)
+                        {
+                            this.onlineStreak++;
+                            this.offlineStreak = 0;
+                        }
+                        else
+                        {
+                            this.offlineStreak++;
+                            this.onlineStreak = 0;
+                        }
+
+                        // 首轮只建立基线：引擎启动瞬间网络栈可能还没就绪，此时就判死刑没有意义
+                        if (this.primed == false)
+                        {
+                            this.primed = true;
+                            this.logger.LogDebug("网络看护首次探测结果：{Online}", online ? "可用" : "不可用");
+                            continue;
+                        }
+
+                        await this.ApplyAsync(online, stoppingToken);
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                     {
                         break;
                     }
-
-                    var online = await this.IsOnlineAsync(stoppingToken);
-                    this.lastProbeTick = Environment.TickCount64;
-                    if (online)
+                    catch (Exception ex)
                     {
-                        this.onlineStreak++;
+                        // [PATCH 0007 / S-3] 单轮异常不得终结整个看护循环。
+                        // 原实现把 catch 放在 while 外层：一次 IsOnlineAsync / ApplyAsync 的意外异常
+                        // 就退出循环，finally 顺手 Dispose 掉 probeSignal，之后网络恢复永久失效
+                        // （且后续任何唤醒都会抛 ObjectDisposedException）。现在只跳过本轮、
+                        // 清零连续判定计数，下一轮照常判定；probeSignal 只在宿主真正停机时释放。
+                        this.logger.LogWarning(ex, "网络看护本轮异常，已跳过并继续下一轮");
                         this.offlineStreak = 0;
-                    }
-                    else
-                    {
-                        this.offlineStreak++;
                         this.onlineStreak = 0;
+                        this.primed = false;
+                        await Task.Delay(TimeSpan.FromSeconds(2d), stoppingToken);
                     }
-
-                    // 首轮只建立基线：引擎启动瞬间网络栈可能还没就绪，此时就判死刑没有意义
-                    if (this.primed == false)
-                    {
-                        this.primed = true;
-                        this.logger.LogDebug("网络看护首次探测结果：{Online}", online ? "可用" : "不可用");
-                        continue;
-                    }
-
-                    await this.ApplyAsync(online, stoppingToken);
                 }
             }
             catch (OperationCanceledException)
@@ -144,7 +167,7 @@ namespace FastGithub.DomainResolve
             }
             catch (Exception ex)
             {
-                // 看护绝不能把宿主带崩
+                // 看护绝不能把宿主带崩（仅覆盖订阅/退订等循环外异常）
                 this.logger.LogWarning(ex, "网络看护异常退出，dnscrypt-proxy 保持当前状态");
             }
             finally
@@ -173,6 +196,15 @@ namespace FastGithub.DomainResolve
                     var reason = $"网络不可用（连续 {this.offlineStreak} 次判定，口径 {options.NetworkCheck}）";
                     this.logger.LogInformation("暂停 dnscrypt-proxy：{Reason}", reason);
                     await this.controller.SuspendAsync(reason, stoppingToken);
+                    // [PATCH 0007] ClearDnsCacheWhenOffline 原本是死配置：属性、绑定、
+                    // appsettings 三处齐全但运行期零读取点，注释说「默认不清」、
+                    // 实现却从不读它。现在接上：默认 false 时行为完全不变（断网期保留
+                    // 缓存里的 IP 供离线使用），true 时额外清空。恢复分支的 ClearCaches
+                    // 保持不变，用于剔除断网期间写入的空解析（最长缓存 10 分钟）。
+                    if (options.ClearDnsCacheWhenOffline)
+                    {
+                        this.dnsClient.ClearCaches();
+                    }
                 }
                 return;
             }
@@ -203,6 +235,13 @@ namespace FastGithub.DomainResolve
                 // [PATCH] 清掉断网期间写入的空解析/不可用缓存（空解析最长缓存 10 分钟），
                 // 否则恢复后命中缓存的域名最长 10 分钟拿到空解析，dnscrypt 已重启也轮不到。
                 this.dnsClient.ClearCaches();
+                // [PATCH 0006b] D-2：断网期写入的 TimeSpan.MaxValue 会让恢复后的 IP 优选
+                // 继续跳过这些 IP 最长 1 分钟。只清失败条目，保留正常测速结果。
+                // IPAddressService 由 AddDomainResolve() 注册为 Singleton，且该方法在
+                // AddDnscryptLifecycle() 之前调用，此处可直接注入。
+                // 注意：这条只覆盖「断网 -> 恢复」；纯空闲退化由 IPAddressService 的
+                // 短过期 + DomainResolver 的 stale-while-error 处理。
+                this.addressService.ClearFailureCaches();
             }
         }
 

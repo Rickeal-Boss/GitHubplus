@@ -34,6 +34,12 @@ namespace FastGithub.DomainResolve
         /// </summary>
         private const int NEGATIVE_CACHE_MILLISECONDS = 5 * 1000;
 
+        /// <summary>
+        /// [PATCH 0006b] 空解析时保留上次成功的地址集（stale-while-error）。
+        /// 置 false 可一键回退到「清空名单」的旧行为。
+        /// </summary>
+        private const bool PRESERVE_LAST_KNOWN_GOOD_IPS = true;
+
         private readonly DnsClient dnsClient;
         private readonly PersistenceService persistence;
         private readonly IPAddressService addressService;
@@ -174,16 +180,24 @@ namespace FastGithub.DomainResolve
                 // [PATCH] 先过滤链路本地地址，再按 IPv4 优先重排，最后截断，避免无效 IP 占满 MAX_IP_COUNT 配额。
                 // 测速结果同样可能是 AAAA 在前（原因见 OrderIPv4First 的说明），这里保持一致的重排口径。
                 newAddresses = OrderIPv4First(newAddresses.Where(IsConnectableAddress)).Take(MAX_IP_COUNT).ToArray();
-                this.dnsEndPointAddress[dnsEndPoint] = newAddresses;
 
+                // [PATCH 0006b] 原实现无条件把 dnsEndPointAddress 覆写成空数组：一次网络波动
+                // （DNS 超时 / 加密查询失败 / 拨测全超时）就会抹掉常驻 IP 名单，波动过去后
+                // 首请求必须重走完整 DNS 解析 + 最多 3 IP x 5s 竞速，表现为「长时间不刷新网页变慢」。
+                // 现在空解析只写 5s 负缓存抑制重试风暴，保留旧地址；下一轮成功测速自然替换，
+                // DNS 真实变更最多延迟一个 15s 周期被感知。旧地址若已不可用，下层
+                // ConnectCallback 仍会遍历并逐个超时，不比「解析为空、拿不到任何候选」更差。
                 if (newAddresses.Length == 0)
                 {
                     this.SetNegativeCache(dnsEndPoint);
+                    if (PRESERVE_LAST_KNOWN_GOOD_IPS)
+                    {
+                        continue;
+                    }
                 }
-                else
-                {
-                    this.RemoveNegativeCache(dnsEndPoint);
-                }
+
+                this.dnsEndPointAddress[dnsEndPoint] = newAddresses;
+                this.RemoveNegativeCache(dnsEndPoint);
 
                 var oldSegmentums = oldAddresses.Take(MAX_IP_COUNT);
                 var newSegmentums = newAddresses.Take(MAX_IP_COUNT);

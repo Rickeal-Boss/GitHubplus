@@ -45,7 +45,10 @@ namespace FastGithub.DomainResolve
 
         /// <summary>
         /// [PATCH] 停机请求标记：Stop 在 Start 还没跑完时排队等待，若等到超时则置位本标记，
-        /// Start 收尾时见到它就立刻自我收尾，避免出现「宿主已走，dnscrypt 刚被拉起来」的孤儿
+        /// Start 收尾时见到它就立刻自我收尾，避免出现「宿主已走，dnscrypt 刚被拉起来」的孤儿。
+        /// [PATCH 0007 / S-1] 同时是「用户/宿主已经要求停止」的粘性意图：
+        /// 只由 StartAsync（一次显式启动）解除，绝不在 Stop 自己的 finally 里清掉。
+        /// 网络看护的 SuspendAsync（pause=true）不得置位，否则 ResumeAsync 的守卫会永久拦住恢复。
         /// </summary>
         private volatile bool stopRequested;
 
@@ -109,6 +112,12 @@ namespace FastGithub.DomainResolve
         /// <returns></returns>
         public Task StartAsync(CancellationToken cancellationToken)
         {
+            // [PATCH 0007 / S-1] 显式启动是唯一解除粘性停机意图的地方。
+            // 原实现在 StopCoreEntryAsync 的 finally 里无条件清回 false：
+            // Stop 排队在 ResumeAsync 持锁启动后面时，TransitionAsync 等闸门超时置位，
+            // 又被同一个调用栈立刻清掉，持锁方看到 false，dnscrypt 照常 Running ——
+            // 那次停止被静默抹掉。首启时该位本就是 false，清位无副作用。
+            this.stopRequested = false;
             return this.TransitionAsync(DnscryptState.Running, "启动", cancellationToken);
         }
 
@@ -215,6 +224,16 @@ namespace FastGithub.DomainResolve
                         return DnscryptState.Stopped;
                     }
 
+                    // [PATCH 0007 / S-2] 启动前统一回收上一次的 Job / Process / 端点。
+                    // 正常断网恢复已经过 StopCoreAsync.finally 清理，这里是幂等的；
+                    // 但「进程意外退出」路径只由 Exited 回调把状态落到 PausedByNetwork，
+                    // 从不走 StopCoreAsync，残留的 Job 句柄与 Process 组件若不回收，
+                    // 每次崩溃复活都会泄漏一对句柄。三个清理本身都幂等，且把
+                    // this.process 置 null 后，旧进程迟到的 Exited 会被 ReferenceEquals 守卫挡掉。
+                    this.ReleaseJob();
+                    this.DisposeProcess();
+                    this.LocalEndPoint = null;
+
                     this.SetState(DnscryptState.Starting, reason, this.Current.LastStopWasGraceful);
                     try
                     {
@@ -240,6 +259,25 @@ namespace FastGithub.DomainResolve
                         this.SetState(DnscryptState.Stopped, $"启动失败：{ex.Message}", false);
                         return DnscryptState.Stopped;
                     }
+
+                    // [PATCH 0007 / S-2b] Start 收尾复查（R2/R3 沙箱实测竞态的根因修复）：
+                    // StartCoreAsync 期间若有 Stop/Suspend 因 gate 超时置位 stopRequested（S-1 改为粘性意图后，
+                    // 该位会一直留着），必须回滚刚拉起的进程，否则宿主已请求停机、dnscrypt 却留在 Running。
+                    // 0007 原始补丁只改了 stopRequested 的清位时机（S-1），漏了 Start 收尾复查这一环；
+                    // 沙箱实测报告 R2（T2：20/20 触发孤儿）与 R3（A4：20/20 pause 方向同源竞态）明确指出，
+                    // 同一处修复同时覆盖 Stop 和 Suspend 两个方向（R3 结论）。T2b 实证：补此段后孤儿归零。
+                    // 回滚操作幂等（与启动失败分支一致），Exited 回调的守卫（ReferenceEquals + State==Running）
+                    // 会挡掉旧进程迟到事件；复活失败时 TransitionAsync 落 Stopped，本守卫不再满足，无风暴。
+                    if (this.stopRequested)
+                    {
+                        this.LocalEndPoint = null;
+                        this.ReleaseJob();
+                        this.DisposeProcess();
+                        this.SetState(DnscryptState.Stopped, "宿主停机（启动收尾回滚）", this.Current.LastStopWasGraceful);
+                        this.logger.LogInformation("dnscrypt-proxy 启动期间收到停机请求，已回滚启动并保持 Stopped");
+                        return DnscryptState.Stopped;
+                    }
+
                     var running = this.LocalEndPoint != null;
                     this.SetState(running ? DnscryptState.Running : DnscryptState.Stopped,
                         running ? reason : $"{reason}（未成功：进程或监听端点缺失）",
@@ -269,21 +307,19 @@ namespace FastGithub.DomainResolve
         }
 
         /// <summary>
-        /// [PATCH] 停机入口：把 stopRequested 清回 false，并带上系统时限内的等待预算
+        /// [PATCH] 停机入口。pause=false 是用户/宿主语义的「停止」，置位粘性意图；
+        /// pause=true 是网络看护的「暂停」，绝不能置位（否则 ResumeAsync 的
+        /// stopRequested 守卫会永久拦住恢复）。清除点只有 StartAsync。
         /// </summary>
         private async Task<bool> StopCoreEntryAsync(string reason, bool pause, CancellationToken cancellationToken)
         {
             var target = pause ? DnscryptState.PausedByNetwork : DnscryptState.Stopped;
-            this.stopRequested = true;
-            try
+            if (pause == false)
             {
-                var state = await this.TransitionAsync(target, reason, cancellationToken);
-                return state == target;
+                this.stopRequested = true;
             }
-            finally
-            {
-                this.stopRequested = false;
-            }
+            var state = await this.TransitionAsync(target, reason, cancellationToken);
+            return state == target;
         }
 
         /// <summary>
@@ -338,6 +374,24 @@ namespace FastGithub.DomainResolve
                         return;
                     }
                     this.LocalEndPoint = null;
+
+                    // [PATCH 0007 / S-2] 进程意外退出（被强杀 / 自身崩溃）时把状态落到
+                    // PausedByNetwork，复用 NetworkWatchService 已真机验证过的恢复链：
+                    //   下一轮在线判定 -> ResumeAsync -> TransitionAsync(Running) -> StartCoreAsync。
+                    // 绝不在事件回调里做异步启动，避免与 gate / 停机链互相踩。
+                    // 守卫排除「我们自己发起的停机」：stopRequested 由 StopCoreEntryAsync、
+                    // 宿主停机、DnscryptShutdownWatcher 先置位；State==Running 排除启动失败、
+                    // 停机中与已暂停；ReferenceEquals 排除旧进程迟到的 Exited（原有守卫）。
+                    // 复活失败时 TransitionAsync 会把状态落成 Stopped，本守卫不再满足，
+                    // 因此最多尝试一次，天然避免崩溃复活风暴；看护周期 15s + RestartDelay 3s
+                    // 即为冷却窗口。
+                    if (this.stopRequested == false && this.Current.State == DnscryptState.Running)
+                    {
+                        this.SetState(DnscryptState.PausedByNetwork,
+                            "dnscrypt-proxy 进程意外退出，等待网络看护恢复",
+                            this.Current.LastStopWasGraceful);
+                        this.logger.LogWarning("{Name} 进程意外退出，已置为待恢复状态（等待看护下一轮拉起）", this.processName);
+                    }
                 };
 
                 // [PATCH] 只有进程模式才纳入 Job Object 兜底。

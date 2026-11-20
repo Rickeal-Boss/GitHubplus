@@ -94,9 +94,9 @@ echo [2f] 固定 NuGet 版本 + 迁移到 .NET 10 LTS
 :: 当前 10.x 最新稳定版；10.0.0 不存在于 NuGet，10.x 从 10.0.8 起）。
 :: 注意：UPSTREAM_COMMIT 只锁住「上游源码」这一个输入，NuGet 依赖是第二个未锁定的输入。
 :: 彻底做法是生成 packages.lock.json 并用 dotnet restore --locked-mode，列为后续项。
-powershell -NoProfile -Command "$p='%SRC%\FastGithub\FastGithub.csproj'; $c=Get-Content -Raw $p; $c=$c.Replace('7.0.0-rc*','10.0.12'); $c | Set-Content $p -Encoding utf8; if ($c -match 'rc\*') { Write-Error '浮动版本未消除'; exit 1 }"
+powershell -NoProfile -Command "$p='%SRC%\FastGithub\FastGithub.csproj'; $raw=Get-Content -Raw $p; $c=$raw.Replace('7.0.0-rc*','10.0.12'); if ($c -eq $raw) { Write-Error '版本串 7.0.0-rc* 未命中，固定版本补丁静默失效（上游模板可能已变更）'; exit 1 }; $c | Set-Content $p -Encoding utf8; if ($c -match 'rc\*') { Write-Error '浮动版本未消除'; exit 1 }"
 if errorlevel 1 goto :fail
-echo   [OK] 已将 7.0.0-rc* 固定为 10.0.12
+echo   [OK] 已将 7.0.0-rc* 固定为 10.0.12（已断言替换确实命中）
 
 echo [2ac] 修复 Yarp.ReverseProxy 高危依赖（1.1.1 → 1.1.2；GHSA-jrjw-qgr2-wfcg / CVE-2023-33141）
 :: 上游 FastGithub.HttpServer.csproj 直接引用 Yarp.ReverseProxy 1.1.1（受影响范围 <=1.1.1），
@@ -136,10 +136,12 @@ if errorlevel 1 goto :fail
 echo   [OK] 已移除 CA 与叶子证书的 tlsClientOid
 
 
-echo [2j] 注入域名解析补丁（解析全失败时负缓存 30 秒 + 下发 IP 截断为 MAX_IP_COUNT）
+echo [2j] 注入域名解析补丁（解析全失败时负缓存 5 秒 + 下发 IP 截断为 MAX_IP_COUNT）
 :: 缓存命中条件是 addresses.Length > 0，而全失败时写入的是空数组 -> 空数组永不命中，
 :: 于是每个请求都重走「DNS 解析 + 竞速 + 串行连接全部候选 IP」（单 IP 超时 10 秒），
-:: 直接放大成重试风暴。故加 30 秒负缓存，并把下发列表截断到 MAX_IP_COUNT 个。
+:: 直接放大成重试风暴。故加负缓存，并把下发列表截断到 MAX_IP_COUNT 个。
+:: [D-3] 负缓存常量 NEGATIVE_CACHE_MILLISECONDS 实际为 5*1000（5 秒：既压住重试风暴，
+:: 又让失败快速自愈），本行与 CI 的 [2j] 断言文案原写 30 秒，属历史口径残留，现订正。
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DomainResolver.cs" "%SRC%\FastGithub.DomainResolve\DomainResolver.cs"
 if errorlevel 1 goto :fail
 
@@ -340,6 +342,18 @@ echo [5i] dnscrypt 源去自指：摘掉自引用源，删除从未使用的 rel
 powershell -NoProfile -Command "$p='%PKG%\dnscrypt-proxy\dnscrypt-proxy.toml'; if (-not (Test-Path $p)) { Write-Error 'dnscrypt-proxy.toml 不存在'; exit 1 }; $qs=[string][char]39; $qd=[string][char]34; $re1=$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs+'\s*,\s*'; $re2=',\s*'+$qs+'https://raw\.githubusercontent\.com/[^'+$qs+']*'+$qs; $raw=[System.IO.File]::ReadAllText($p); $sep=[string][char]13+'?'+[string][char]10; $lines=$raw -split $sep; $out=New-Object System.Collections.Generic.List[string]; $inRelays=$false; foreach($l in $lines){ $t=$l.Trim(); $n=$t.Replace($qs,'').Replace($qd,''); if($inRelays){ if($t.StartsWith('[')){ $inRelays=$false; $out.Add($l) }; continue }; if($n -eq '[sources.relays]'){ $inRelays=$true; continue }; if($l.Contains('raw.githubusercontent.com')){ $l=$l -replace $re1,''; $l=$l -replace $re2,'' }; $out.Add($l) }; if($out.Count -gt 0 -and $out[$out.Count-1].Length -eq 0){ $out.RemoveAt($out.Count-1) }; $new=[string]::Join([string][char]10,$out)+[string][char]10; [System.IO.File]::WriteAllText($p,$new,(New-Object System.Text.UTF8Encoding($false))); $r=[System.IO.File]::ReadAllText($p); $rn=$r.Replace($qs,'').Replace($qd,''); if($r.Contains('raw.githubusercontent.com')){ Write-Error '自引用源未摘除'; exit 1 }; if($rn.Contains('[sources.relays]')){ Write-Error 'relays 源段未删除'; exit 1 }; if($rn.Contains('[sources.public-resolvers]') -eq $false){ Write-Error 'public-resolvers 段丢失'; exit 1 }; if($r.Contains('download.dnscrypt.info') -eq $false){ Write-Error '可用镜像源丢失'; exit 1 }"
 if errorlevel 1 goto :fail
 echo   [OK] dnscrypt 源已去自指（镜像源保留），无用 relays 源段已删除
+
+echo [5j] dnscrypt 首次启动加速：国内 bootstrap 优先 + 缩短 netprobe 超时
+:: [H-1] 上游 pinned toml 第 244 行 bootstrap_resolvers = ['9.9.9.9:53', '8.8.8.8:53']，
+:: 配合 ignore_system_dns=true：首次启动必须先解析源列表下载域名，国内直连这两个境外 DNS
+:: 常常不通；再叠加 netprobe_timeout=60，冷启动可能被拖到几十秒，而 UI 因 verify:false
+:: 只等 1.5s 就显示「运行中」。这里把国内 DNS 放到数组最前并保留原境外项作兜底
+:: （纯增量，可达性只会更好不会更差），netprobe 超时 60s 收到 10s。
+:: 两处键都做命中断言：上游 toml 两行均为单行格式，若换模板变成多行数组而未命中即失败，
+:: 不会静默保留旧值。回写保持 LF + 无 BOM，与 [5i] 一致。
+powershell -NoProfile -Command "$p='%PKG%\dnscrypt-proxy\dnscrypt-proxy.toml'; if (-not (Test-Path $p)) { Write-Error 'dnscrypt-proxy.toml 不存在'; exit 1 }; $q=[string][char]39; $newB='bootstrap_resolvers = [' + $q + '114.114.114.114:53' + $q + ', ' + $q + '223.5.5.5:53' + $q + ', ' + $q + '9.9.9.9:53' + $q + ', ' + $q + '8.8.8.8:53' + $q + ']'; $lines=[System.IO.File]::ReadAllLines($p); $hb=$false; $hn=$false; $out=New-Object System.Collections.Generic.List[string]; foreach($l in $lines){ $s=$l.Trim(); if($s.StartsWith('bootstrap_resolvers')){ $out.Add($newB); $hb=$true } elseif($s.StartsWith('netprobe_timeout')){ $out.Add('netprobe_timeout = 10'); $hn=$true } else { $out.Add($l) } }; if(-not $hb -or -not $hn){ Write-Error ('bootstrap/netprobe 键未命中 hb=' + $hb + ' hn=' + $hn + '，上游 toml 模板可能已变更'); exit 1 }; [System.IO.File]::WriteAllText($p, ([string]::Join([string][char]10, $out) + [string][char]10), (New-Object System.Text.UTF8Encoding($false))); $r=[System.IO.File]::ReadAllText($p); if($r.Contains('114.114.114.114') -eq $false -or $r.Contains('netprobe_timeout = 10') -eq $false){ Write-Error '国内 bootstrap 或 netprobe 超时未写入'; exit 1 }"
+if errorlevel 1 goto :fail
+echo   [OK] bootstrap_resolvers 国内优先（境外项保留兜底），netprobe_timeout=10
 
 echo [5g] dnscrypt-proxy 完整性校验（基线固定，非"已审计"：无法逆向 7MB 二进制）
 :: 该 exe 是 git blob，UPSTREAM_COMMIT 已从内容上绑定它；本校验的作用是

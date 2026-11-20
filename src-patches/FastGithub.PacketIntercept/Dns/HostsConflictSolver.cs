@@ -32,6 +32,16 @@ namespace FastGithub.PacketIntercept.Dns
         private readonly FastGithubConfig fastGithubConfig;
         private readonly ILogger<HostsConflictSolver> logger;
 
+        // [PATCH 0006] hosts 原子写串行化 + 重试参数。
+        // 原实现把 WriteAtomicAsync 做成 static、临时文件名固定为 hostsPath + ".tmp"：
+        //   SolveAsync 会先调一次 RestoreAsync（可能写 tmp），随后自己再写一次 tmp；
+        //   停机链 StopAsync -> RestoreAsync 与新实例启动链 SolveAsync 并发时，
+        //   两个进程更会直接撞同一个 .tmp，抛 "being used by another process"。
+        // 真机 2026-11-21 02:06:21 已复现。唯一文件名负责跨进程，闸门负责本进程内串行。
+        private readonly SemaphoreSlim hostsWriteGate = new SemaphoreSlim(1, 1);
+        private const int HOSTS_WRITE_RETRY_COUNT = 3;
+        private const int HOSTS_WRITE_RETRY_DELAY_MS = 120;
+
         /// <summary>
         /// host文件冲解决者
         /// </summary>
@@ -214,22 +224,66 @@ namespace FastGithub.PacketIntercept.Dns
         }
 
         /// <summary>
-        /// [PATCH] 原子写入：先写同目录 .tmp，再优先 File.Replace（保留目标文件原有 ACL/属性），
+        /// [PATCH] 原子写入：先写同目录临时文件，再优先 File.Replace（保留目标文件原有 ACL/属性），
         /// 失败退回 File.Move 覆盖。上游直接 File.WriteAllTextAsync 覆盖原文件，
         /// 进程在中途被终止（强杀/崩溃/关机）会残留半截 hosts。
+        ///
+        /// [PATCH 0006] 三处加固，修复真机复现的 hosts.tmp 占用冲突：
+        ///   1) 临时文件名带 Guid，不再固定 hosts.tmp —— 避免旧实例 Restore 与新实例 Solve 撞名；
+        ///   2) IOException 短退避重试 3 次 —— 覆盖 Defender / 索引服务瞬时扫描、跨进程 Replace 竞争；
+        ///   3) 本进程内用 hostsWriteGate 串行化 Solve/Restore 的写入。
+        /// 每次尝试都用新的临时文件名并在 finally 尽力清理，不会越堆越多残留 .tmp。
         /// </summary>
-        private static async Task WriteAtomicAsync(string hostsPath, byte[] content, CancellationToken cancellationToken)
+        private async Task WriteAtomicAsync(string hostsPath, byte[] content, CancellationToken cancellationToken)
         {
-            var tmpPath = hostsPath + ".tmp";
-            await File.WriteAllBytesAsync(tmpPath, content, cancellationToken);
+            await this.hostsWriteGate.WaitAsync(cancellationToken);
             try
             {
-                // hosts 位于 System32\drivers\etc，有特定 ACL；Replace 保留目标文件安全描述符
-                File.Replace(tmpPath, hostsPath, destinationBackupFileName: null);
+                for (var attempt = 1; attempt <= HOSTS_WRITE_RETRY_COUNT; attempt++)
+                {
+                    var tmpPath = hostsPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        await File.WriteAllBytesAsync(tmpPath, content, cancellationToken);
+                        try
+                        {
+                            // hosts 位于 System32\drivers\etc，有特定 ACL；Replace 保留目标文件安全描述符
+                            File.Replace(tmpPath, hostsPath, destinationBackupFileName: null);
+                        }
+                        catch (Exception)
+                        {
+                            File.Move(tmpPath, hostsPath, overwrite: true);
+                        }
+                        return;
+                    }
+                    catch (IOException ex) when (attempt < HOSTS_WRITE_RETRY_COUNT)
+                    {
+                        this.logger.LogWarning(ex,
+                            "hosts 原子写第 {Attempt} 次被占用（{Tmp}），{Delay}ms 后重试",
+                            attempt, tmpPath, HOSTS_WRITE_RETRY_DELAY_MS);
+                        await Task.Delay(HOSTS_WRITE_RETRY_DELAY_MS, cancellationToken);
+                    }
+                    finally
+                    {
+                        // Replace/Move 成功后 tmp 已不存在；失败时清掉残留，避免堆积
+                        try
+                        {
+                            if (File.Exists(tmpPath))
+                            {
+                                File.Delete(tmpPath);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                // 正常路径已在上面 return；走到这里说明重试全部耗尽（防御性兜底）
+                throw new IOException("hosts 原子写重试耗尽，未修改 hosts 文件");
             }
-            catch (Exception)
+            finally
             {
-                File.Move(tmpPath, hostsPath, overwrite: true);
+                this.hostsWriteGate.Release();
             }
         }
 

@@ -86,6 +86,15 @@ namespace FastGithub.Http
                 UseCookies = false,
                 AllowAutoRedirect = false,
                 AutomaticDecompression = DecompressionMethods.None,
+                // [PATCH 0006b] 空闲保活：.NET 6+ 的 PooledConnectionIdleTimeout 默认 1 分钟
+                // （.NET Core / .NET 5 为 2 分钟），池内连接空闲超过该时长即被回收，
+                // 回来首请求要重做 TCP + TLS；本工具还多一层本地 MITM + 回源，握手成本更高。
+                // 延长到 10 分钟覆盖「一段时间不刷新网页」的常见间隔。
+                // 为什么不会引入通用 .NET 应用担心的「DNS 僵死」：本类的 ConnectCallback
+                // 每次建连都自行调用 IDomainResolver.ResolveAsync 选 IP，IP 新鲜度由
+                // DomainResolver 的 15s 测速与 10 分钟 domainAddressCache 管理，
+                // 不依赖连接池重建来刷新 DNS；PooledConnectionLifetime 保持默认原样。
+                PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10d),
                 ConnectCallback = this.ConnectCallback
             };
         }

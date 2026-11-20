@@ -90,17 +90,26 @@ namespace FastGithub.PacketIntercept.Dns
                 return;
             }
 
-            // 先把上一次由本程序写入的条目精确摘掉，避免被取消勾选的域名残留
-            var items = new HashSet<string>(GetProxyOvride(settings), StringComparer.OrdinalIgnoreCase);
+            // 先把上一次由本程序写入的条目精确摘掉，避免被取消勾选的域名残留。
+            // [PATCH 0007] 改用 List 保序写回：原实现用 HashSet 做 Remove 再 Add，
+            // .NET 的 HashSet 把移除后的空槽压进 LIFO free list，随后 Add 按逆序回填，
+            // 枚举顺序每次翻转一次（真机三次快照 A -> B(完全逆序) -> A）。集合内容一致，
+            // 但字符串顺序抖动会污染任何基于文本的 diff / 备份比对，也让人误判为残留。
+            // 现在已有条目原样保留，被摘掉的 owned 精确剔除，新域名按 DomainConfigs 顺序追加。
+            var items = GetProxyOvride(settings).ToList();
             foreach (var owned in GetOwnedProxyOvride(settings))
             {
-                items.Remove(owned);
+                var toRemove = owned;
+                items.RemoveAll(x => string.Equals(x, toRemove, StringComparison.OrdinalIgnoreCase));
             }
 
             var current = this.options.Value.DomainConfigs.Keys.ToArray();
             foreach (var item in current)
             {
-                items.Add(item);
+                if (items.Any(x => string.Equals(x, item, StringComparison.OrdinalIgnoreCase)) == false)
+                {
+                    items.Add(item);
+                }
             }
 
             SetProxyOvride(settings, items);

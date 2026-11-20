@@ -143,7 +143,7 @@ jobs:
             echo "::error::[2j] 补丁未生效：DomainResolver.cs 未把下发 IP 截断为 MAX_IP_COUNT"
             exit 1
           fi
-          echo "  已确认域名解析补丁生效（全失败负缓存 30s + IP 数量截断）"
+          echo "  已确认域名解析补丁生效（全失败负缓存 5s + IP 数量截断）"
 
           # [2k] 测速周期补丁：1s -> 15s
           F7="src/FastGithub.DomainResolve/DomainResolveHostedService.cs"
@@ -173,6 +173,111 @@ jobs:
           fi
           echo "  已确认拨测并发已加上限（SemaphoreSlim）"
 
+          # [0006b] 空闲退化防护：连接池保活 / 空解析保留旧 IP / 失败缓存短过期 / 恢复清失败项
+          F_IDLE1="src/FastGithub.Http/HttpClientHandler.cs"
+          F_IDLE2="src/FastGithub.DomainResolve/DomainResolver.cs"
+          F_IDLE3="src/FastGithub.DomainResolve/IPAddressService.cs"
+          F_IDLE4="src/FastGithub.DomainResolve/NetworkWatchService.cs"
+          if ! grep -q "PooledConnectionIdleTimeout = TimeSpan.FromMinutes(10d)" "$F_IDLE1"; then
+            echo "::error::[0006b] 补丁未生效：连接池空闲超时未延长到 10 分钟"
+            exit 1
+          fi
+          if ! grep -q "PRESERVE_LAST_KNOWN_GOOD_IPS" "$F_IDLE2"; then
+            echo "::error::[0006b] 补丁未生效：空解析未保留上次成功地址集（stale-while-error）"
+            exit 1
+          fi
+          if ! grep -q "public void ClearFailureCaches()" "$F_IDLE3"; then
+            echo "::error::[0006b] 补丁未生效：IPAddressService 缺少失败缓存清理"
+            exit 1
+          fi
+          if ! grep -q "this.addressService.ClearFailureCaches();" "$F_IDLE4"; then
+            echo "::error::[0006b] 补丁未生效：网络恢复未清理失败耗时（D-2）"
+            exit 1
+          fi
+          echo "  已确认空闲退化四项防护已生效"
+
+          # ==================== [0007] 最终收口防回归 ====================
+          F_LIFE="src/FastGithub.DomainResolve/DnscryptProxy.cs"
+          F_WATCH="src/FastGithub.DomainResolve/NetworkWatchService.cs"
+          if [ ! -f "$F_LIFE" ] || [ ! -f "$F_WATCH" ]; then
+            echo "::error::[0007] 生命周期补丁文件漏拷到 src/"
+            exit 1
+          fi
+          # S-1 粘性停止意图
+          if ! grep -q "显式启动是唯一解除粘性停机意图的地方" "$F_LIFE"; then
+            echo "::error::[0007/S-1] stopRequested 未改为粘性意图（Stop 排队在 Resume 后面会被抹掉）"
+            exit 1
+          fi
+          if grep -q "把 stopRequested 清回 false" "$F_LIFE"; then
+            echo "::error::[0007/S-1] 旧版 StopCoreEntryAsync.finally 仍在清位（S-1 回退）"
+            exit 1
+          fi
+          # S-2 崩溃复活（复用看护恢复链，不在 Exited 回调里起异步）
+          if ! grep -q "进程意外退出，等待网络看护恢复" "$F_LIFE"; then
+            echo "::error::[0007/S-2] Exited 未把意外退出落到待恢复态（强杀后 DNS 防污染静默降级）"
+            exit 1
+          fi
+          # S-2b Start 收尾复查（R2/R3 沙箱实测竞态根因修复）
+          # 0007 原补丁 S-1 只改 stopRequested 清位时机，漏了 Start 分支 StartCoreAsync 后的复查；
+          # R2 T2（20/20 Stop 方向孤儿）与 R3 A4（20/20 Suspend 方向同源）实测指出缺口，T2b 实证此段修复有效。
+          if ! grep -q "宿主停机（启动收尾回滚）" "$F_LIFE"; then
+            echo "::error::[0007/S-2b] TransitionAsync 的 Start 分支未在 StartCoreAsync 后复查 stopRequested（R2/R3 竞态未修复，Stop/Suspend 方向孤儿）"
+            exit 1
+          fi
+          # S-3 看护单轮异常隔离
+          if ! grep -q "网络看护本轮异常，已跳过并继续下一轮" "$F_WATCH"; then
+            echo "::error::[0007/S-3] 看护单轮异常仍会终结循环并 Dispose probeSignal"
+            exit 1
+          fi
+          # 死配置接上
+          if ! grep -q "if (options.ClearDnsCacheWhenOffline)" "$F_WATCH"; then
+            echo "::error::[0007] ClearDnsCacheWhenOffline 仍是零读取点的死配置"
+            exit 1
+          fi
+          # F-1 / F-2 / R-2：卸载脚本
+          if ! grep -qF '(?<=\s)//[^\r\n]*$' clean.cmd; then
+            echo "::error::[0007/F-1] clean.cmd 未剥离行内 // 注释，主配置 ConvertFrom-Json 仍会静默失败"
+            exit 1
+          fi
+          if ! grep -qF '$pats2 -notcontains $_.Trim()' clean.cmd; then
+            echo "::error::[0007/F-2] clean.cmd 比较 ProxyOverride 时未 Trim，带空格条目会漏删"
+            exit 1
+          fi
+          if ! grep -qF 'r.ReturnValue -ne 0' clean.cmd; then
+            echo "::error::[0007/R-2] clean.cmd 未校验 Invoke-CimMethod 返回值，WMI 失败会静默降级"
+            exit 1
+          fi
+          # F-3 / H-1 / D-3：构建脚本
+          if ! grep -qF 'if ($c -eq $raw)' build-portable.cmd; then
+            echo "::error::[0007/F-3] [2f] 版本替换未加强断言，换模板会静默保留浮动预发布版本"
+            exit 1
+          fi
+          if ! grep -qF 'bootstrap/netprobe 键未命中' build-portable.cmd; then
+            echo "::error::[0007/H-1] [5j] 国内 bootstrap 与 netprobe 超时改写缺失"
+            exit 1
+          fi
+          if grep -qF '负缓存 30 秒' build-portable.cmd; then
+            echo "::error::[0007/D-3] 构建脚本仍把负缓存写成 30 秒（实际 5 秒）"
+            exit 1
+          fi
+          # ProxyOverride 保序写回（HashSet 会逐次翻转顺序）
+          F_PROXY="src/FastGithub.PacketIntercept/Dns/ProxyConflictSolver.cs"
+          if ! grep -q "items.RemoveAll(x => string.Equals" "$F_PROXY"; then
+            echo "::error::[0007] ProxyOverride 仍用 HashSet 写回，顺序会逐次翻转"
+            exit 1
+          fi
+          # H-2：DnscryptState.cs 原先在 CI 中 0 次出现，漏拷只能等编译期才炸
+          F_DST="src/FastGithub.DomainResolve/DnscryptState.cs"
+          if [ ! -f "$F_DST" ]; then
+            echo "::error::[0007/H-2] DnscryptState.cs 漏拷到 src/"
+            exit 1
+          fi
+          if ! grep -q "ClearDnsCacheWhenOffline" "$F_DST"; then
+            echo "::error::[0007/H-2] DnscryptState.cs 内容断言未命中"
+            exit 1
+          fi
+          echo "  已确认 [0007] 最终收口 16 项防护全部生效"
+
           # [2m] 日志容量补丁：单文件大小上限 + 保留数量上限
           F9="src/FastGithub/Startup.cs"
           if [ ! -f "$F9" ]; then
@@ -189,14 +294,16 @@ jobs:
           fi
           echo "  已确认日志文件容量与保留数量已限制"
 
-          # [2n] FallbackDns 补丁：不得再含国内不可达的 8.8.8.8
+          # [2n] FallbackDns 补丁：运行期 appsettings.json 不得含 8.8.8.8。
+          # 注意 dnscrypt-proxy.toml 的 bootstrap_resolvers 仍保留 8.8.8.8 作境外兜底，
+          # 由 [5j] 统一改写为「国内优先 + 境外兜底」。两处作用域不同，不是策略矛盾。
           F10="src/FastGithub/appsettings.json"
           if [ ! -f "$F10" ]; then
             echo "::error::[2n] 补丁未生效：$F10 不存在"
             exit 1
           fi
           if grep -q "8.8.8.8" "$F10"; then
-            echo "::error::[2n] 补丁未生效：appsettings.json 仍含国内不可达的 8.8.8.8"
+            echo "::error::[2n] 补丁未生效：appsettings.json 的 FallbackDns 仍含 8.8.8.8"
             exit 1
           fi
           if ! grep -q "223.5.5.5" "$F10"; then
@@ -417,6 +524,19 @@ jobs:
           fi
           if ! grep -q "File.Replace" "$F25"; then
             echo "::error::[2y] 补丁未生效：hosts 未使用 File.Replace 原子替换写文件"
+            exit 1
+          fi
+          # [0006] hosts.tmp 占用冲突防回归：临时文件名必须唯一、写入必须串行、必须有重试
+          if ! grep -q "Guid.NewGuid" "$F25"; then
+            echo "::error::[0006] 补丁未生效：hosts 临时文件名未唯一化（真机复现 hosts.tmp 占用）"
+            exit 1
+          fi
+          if ! grep -q "hostsWriteGate" "$F25"; then
+            echo "::error::[0006] 补丁未生效：hosts 写入未串行化"
+            exit 1
+          fi
+          if ! grep -q "HOSTS_WRITE_RETRY_COUNT" "$F25"; then
+            echo "::error::[0006] 补丁未生效：hosts 原子写缺少占用重试"
             exit 1
           fi
           echo "  已确认 hosts 纯字节处理 + 原子替换 + 崩溃自愈记录已生效"
@@ -743,21 +863,21 @@ jobs:
           fi
           echo "  已确认 git 缺失时跳过配置（不再误告警）"
 
-          # [P3] 版本号 3.1.2：产品版本号（引擎启动横幅与 UI 标题同源）
+          # [P3] 版本号 3.1.3：产品版本号（引擎启动横幅与 UI 标题同源）
           F48="src/Directory.Build.props"
           if [ ! -f "$F48" ]; then
             echo "::error::[P3] 补丁未生效：$F48 不存在"
             exit 1
           fi
-          if ! grep -q "<Version>3.1.2</Version>" "$F48"; then
-            echo "::error::[P3] Directory.Build.props 版本号未升到 3.1.2"
+          if ! grep -q "<Version>3.1.3</Version>" "$F48"; then
+            echo "::error::[P3] Directory.Build.props 版本号未升到 3.1.3"
             exit 1
           fi
           if grep -q "2.1.5" "$F48"; then
             echo "::error::[P3] Directory.Build.props 仍残留旧版本号 2.1.5"
             exit 1
           fi
-          echo "  已确认产品版本号已升到 3.1.2"
+          echo "  已确认产品版本号已升到 3.1.3"
 
           # [P3] 客户端主动中断降噪：不再记告警（IsError 已判为非错误）
           F49="src/FastGithub.HttpServer/HttpMiddlewares/RequestLoggingMilldeware.cs"
@@ -1033,17 +1153,23 @@ jobs:
             echo "::error::[5i] relays 段终止条件又把注释行当段尾，换模板会残留 relays 键（G-6 回退）"
             exit 1
           fi
-          if ! grep -q "GetLastPInvokeError" "src/FastGithub.DomainResolve/ProcessGracefulStop.cs"; then
+          F_G7="src/FastGithub.DomainResolve/ProcessGracefulStop.cs"
+          if [ ! -f "$F_G7" ]; then
+            echo "::error::[G-7] 补丁目标文件不存在：$F_G7（漏拷时 grep 返回 2 会被误判为「没找到」）"
+            exit 1
+          fi
+          if ! grep -q "GetLastPInvokeError" "$F_G7"; then
             echo "::error::Unix SIGTERM 错误码未用 GetLastPInvokeError 读取 libc errno（G-7 回退）"
             exit 1
           fi
           # [N-1] clean.cmd 卸载自愈悖论防回归（v3.1.1 引入，v3.1.2 随 Release 发布）
-          if ! grep -q "ping -t 127.0.0.1" clean.cmd; then
+          # [R-3] 判真实逻辑字面量，不判注释/提示文案：删掉逻辑只留注释原先也能通过。
+          if ! grep -qF 'Get-CimInstance Win32_Process' clean.cmd; then
             echo "::error::clean.cmd 未精确结束锚点，强杀绕过优雅停机链会让 hosts 回滚记录陷入保留死循环（N-1 回退）"
             exit 1
           fi
-          if ! grep -q "SolveAsync" clean.cmd; then
-            echo "::error::clean.cmd 保留分支仍提示仅启动引擎自愈，SolveAsync 会再次写记录（N-1 回退）"
+          if ! grep -qF 'if ([string]::IsNullOrEmpty($rec))' clean.cmd; then
+            echo "::error::clean.cmd [3b/7] 保留分支的「无未消费记录才删键」逻辑缺失（N-1 回退）"
             exit 1
           fi
           # [L-1/L-2] v3.1.2 播报诚实度防回归，全部用 ASCII grep 模式规避中文 locale 差异
@@ -1110,25 +1236,26 @@ jobs:
           # v3.1.2 起 Release notes 写详细记录：版本变更 + 真机证据 + 未覆盖边界 + 校验值。
           NOTES="Windows 免安装包（自动构建），产物由本 tag 对应的源码直接构建。
 
-          ## v3.1.2 变更（相对已发布的 v3.1.1）
-          - N-1 卸载自愈悖论：clean.cmd [0/7] 按命令行精确结束本工具锚点（ping -t 127.0.0.1，服务模式先 sc stop），等 8s 让引擎走完 host.StopAsync() 优雅链后再对残余进程 /F 兜底；[3b/7] 保留分支改为「启动引擎 → UI 点停止加速 → 重跑脚本」，破解「保留记录 → 启动引擎 → 又写记录」死循环。
-          - L-1 WinDivert 副本删除：sc stop/delete WinDivert 提到 rd 之前；rd 后复查目录，残留时明确警告「重启后重跑或手动删除」，不再出现「Access is denied 却报已删除」。
-          - L-2 git 播报： [2/7] 与末尾校验先用 where git 判存在；无 git 时跳过而非谎报「已清理 / 已恢复默认」，并给出手动检查 .gitconfig 的指引。
-          - L-3 部分闭环：证书删除后重新枚举复核、cacert 目录 rd 后 if exist 复查，成功才播报成功。
-          - CI：新增 4 条防回归断言（N-1 两条 + L-1/L-2 各一条），全部用 ASCII grep 模式规避 locale 差异；产品版本号升到 3.1.2，引擎横幅与 UI 标题同源。
+          ## v3.1.3 变更（相对已发布的 v3.1.2；0007 最终收口 + R2/R3 竞态根因修复）
+          - S-1 粘性停止意图：stopRequested 原在 StopCoreEntryAsync.finally 无条件清回 false，Stop 排队在 ResumeAsync 持锁启动后会被抹掉；改为只由显式 StartAsync 解除，SuspendAsync（pause=true）不置位。
+          - S-2 崩溃复活：Exited 回调原只清 LocalEndPoint，强杀/崩溃后状态仍 Running、解析静默退回 FallbackDns；现四重守卫（ReferenceEquals + !stopRequested + State==Running）下落 PausedByNetwork，复用已真机验证的看护恢复链，不在事件回调里起异步；复活失败落 Stopped，最多一次，无风暴。
+          - S-2b Start 收尾复查（R2/R3 沙箱实测竞态根因修复）：TransitionAsync 的 Start 分支在 StartCoreAsync 完成后、SetState(Running) 前补 if(stopRequested){回滚 Job/Process/端点; SetState(Stopped); return}。0007 原补丁只改清位时机（S-1），漏了这环；沙箱 R2（T2：20/20 Stop 方向孤儿）与 R3（A4：20/20 Suspend 方向同源）实测指出，一处修复同时覆盖两个方向（R3 结论，T2b 实证孤儿归零）。
+          - S-3 看护自恢复：单轮异常原会终结 while 并 Dispose probeSignal，网络恢复永久失效；改为循环内隔离、清零计数、2s 后继续下一轮。
+          - 0006a hosts.tmp 占用冲突（真机 02:06 复现）：临时文件名带 Guid、IOException 3×120ms 退避、SemaphoreSlim 串行化、finally 清残留。
+          - 0006b 空闲退化四项：连接池 idle 1min→10min；空解析保留上次成功 IP（stale-while-error，开关 PRESERVE_LAST_KNOWN_GOOD_IPS 可回退）；失败耗时 5min→30s/1min；恢复只清失败项 ClearFailureCaches()。
+          - 脚本/配置零风险项：F-1 行内 // 注释剥离（主配置 ConvertFrom-Json 原 100% 静默失败）、F-2 比较时 Trim、F-3 [2f] 替换命中强断言、H-1 [5j] 国内 bootstrap 优先 + netprobe_timeout 60→10、H-2 CI 闸门 -f 前置、R-2 CIM 返回值校验、R-3 断言改判真实逻辑字面量、D-3 负缓存 5s 文案订正、ProxyOverride 改 List 保序写回（HashSet 会逐次翻转）、ClearDnsCacheWhenOffline 接上读取点（默认 false 行为不变）。
+          - CI：新增 16 条防回归断言（0007 的 15 条 + S-2b Start 收尾复查 1 条），R-3 两条 N-1 断言改判真实逻辑字面量；产品版本号升到 3.1.3，引擎横幅与 UI 标题同源。
 
-          ## 真机证据（N-1 修复后的 clean.cmd 完整卸载日志）
-          - [0/7] 只结束 1 个锚点 + FastGithub.UI.exe，无 /F 强杀残留输出 → 8s 窗口内引擎自行完成优雅停机链。
-          - [3/7] 未发现本工具追加的 ProxyOverride 条目、未找到条目记录 → 引擎回滚并自删记录。
-          - [3b/7] 未找到 hosts 回滚记录 → 无未消费 HostsPatchedSegments，不存在永久残留。
-          - [1/7] 移除 2 张 CA 根证书；[4/7] 删除 cacert 目录（含明文私钥 fastgithub.key）；[7/7] 删除 WinDivert 内核服务。
-          - 16 处新版 clean.cmd 关键文案逐字命中，确认跑的是修复后版本而非页面缓存。
+          ## 真机证据（0007 收口 + G-2 销账 + 沙箱三报告）
+          - G-2 复验（已销账，2026-11-21 01:12/01:24/01:25）：关控制台窗口走 CTRL_CLOSE 钩子 22ms 完整链；Ctrl+C 走 ConsoleLifetime→host.StopAsync() 只留已优雅退出（5ms）；注销无停机日志但三个 exe 全无孤儿。-Check 只读核验 ProxyOverride 精确回到 20 条用户条目、FastGithubProxyOverrideOwned 已删、5533 无监听。
+          - 卸载日志（N-1 修复后 clean.cmd）：[0/7] 只结束 1 锚点 + UI、无 /F 强杀 → 8s 窗口引擎自行优雅停机；[3b/7] 无未消费 HostsPatchedSegments；[1/7] 移除 2 CA、[4/7] 删 cacert（含私钥）、[7/7] 删 WinDivert 服务。
+          - 反复启停 20 轮句柄 1040→948（斜率 -4.84/轮，无泄漏）；断网→暂停 4.5s、恢复→可用约 5s；延迟 direct P50 0.006~0.012s / accel P50 0.019~0.021s，加速态 P95 长尾从 0.141~0.146s 削到 0.028~0.042s。
+          - 沙箱实测（R1/R2/R3 三份报告）：R2 T2 发现 Start 收尾复查缺口（20/20 孤儿）、T2b 实证修复有效；R3 A4 确认 pause 方向同源（20/20）、A5 1000 次抖动状态机自洽；端口实探双绑口径/退避/反复启停 10/10 无幽灵端口；配置边界 37/37、匹配边界 23/23 全过。
 
-          ## 已知未覆盖（不阻塞本次发布，按 README 排期）
-          - G-2 复验：不经 UI 直接带锚点运行 fastgithub.exe，Ctrl+C / 关控制台 / 注销三种停法尚未取得真机日志。
-          - N-1 兜底分支：强杀引擎使 hosts 仍被注释 → clean.cmd 保留提示 → 两步法 → 重跑，这条路径尚未真机走过。
-          - F-1 / F-2：本次日志走「无需处理」分支，clean.cmd 的 ProxyOverride 解析逻辑未被触发。
-          - S-1/S-2/S-3/S-4/D-2、bench-stability.ps1 8 项、H-1/H-3/H-4 工程项：等真机日志后另排补丁。
+          ## 已知未覆盖（不阻塞本次发布，均为极端工况/OS 限制）
+          - S-4 注销不经 UI 的优雅停机：交互式会话收不到 CTRL_LOGOFF，进程随即被终止；真机确认无孤儿但不走还原链。
+          - R-1 服务模式 + hosts 残留 + 强杀后卸载的三重叠加；AppHostedService 同步 WaitForExit() 的服务模式停机竞态（G-2 三种停法真机全过）。
+          - H-3 packages.lock.json（需 dotnet restore --locked-mode 生成）、H-4 ReferenceAssemblies.net45（需 CI runner 确认 targeting pack）、F-4 Set-Content BOM 不一致（信息级，对 MSBuild/Roslyn 无害）。
 
           ## 使用与卸载
           - 解压后以管理员身份运行 FastGithub.UI.exe，首次运行信任本地 CA。

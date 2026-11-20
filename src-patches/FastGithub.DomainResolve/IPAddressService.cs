@@ -31,10 +31,18 @@ namespace FastGithub.DomainResolve
         private readonly IMemoryCache domainAddressCache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
         private record AddressElapsed(IPAddress Address, TimeSpan Elapsed);
-        private readonly TimeSpan problemElapsedExpiration = TimeSpan.FromMinutes(1d);
+        // [PATCH 0006b] 失败耗时一律短过期。原实现只对 NetworkDown / NetworkUnreachable
+        // 用 1 分钟，其余失败（远端超时、连接被拒、TLS 失败等更常见的波动）用
+        // normalElapsedExpiration=5 分钟，于是「波动已过但 IP 仍被记为 TimeSpan.MaxValue」
+        // 最长残留 5 分钟，是空闲/波动后首请求变慢的直接来源之一。
+        // 失败记录本就该快速重试；正常测速结果仍保留 5 分钟。
+        private readonly TimeSpan problemElapsedExpiration = TimeSpan.FromSeconds(30d);
+        private readonly TimeSpan failedElapsedExpiration = TimeSpan.FromMinutes(1d);
         private readonly TimeSpan normalElapsedExpiration = TimeSpan.FromMinutes(5d);
         private readonly TimeSpan connectTimeout = TimeSpan.FromSeconds(5d);
-        private readonly IMemoryCache addressElapsedCache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
+        // [PATCH 0006b] 改为具体 MemoryCache：恢复路径要枚举并只剔除失败条目，
+        // IMemoryCache 接口没有枚举能力（与 DnsClient.ClearCaches 同样的处理）。
+        private readonly MemoryCache addressElapsedCache = new MemoryCache(Options.Create(new MemoryCacheOptions()));
 
         /// <summary>
         /// 并发拨测闸门
@@ -170,12 +178,36 @@ namespace FastGithub.DomainResolve
                 cancellationToken.ThrowIfCancellationRequested();
 
                 addressElapsed = new AddressElapsed(endPoint.Address, TimeSpan.MaxValue);
-                var expiration = IsLocalNetworkProblem(ex) ? this.problemElapsedExpiration : this.normalElapsedExpiration;
+                var expiration = IsLocalNetworkProblem(ex) ? this.problemElapsedExpiration : this.failedElapsedExpiration;
                 return this.addressElapsedCache.Set(endPoint, addressElapsed, expiration);
             }
             finally
             {
                 stopWatch.Stop();
+            }
+        }
+
+        /// <summary>
+        /// [PATCH 0006b] 网络恢复后清掉失败耗时记录（D-2），保留正常测速结果。
+        /// 只剔除 Elapsed == TimeSpan.MaxValue 的条目：全清会让所有 IP 重新竞速，
+        /// 反而把恢复首请求拖慢。由 NetworkWatchService 在 ResumeAsync 成功后调用。
+        /// 纯空闲退化不走这条路径，由短过期 + DomainResolver 的 stale-while-error 处理。
+        /// </summary>
+        public void ClearFailureCaches()
+        {
+            // 先收集再删，避免在任何 MemoryCache 实现上出现「枚举中修改」的歧义
+            var staleKeys = new List<object>();
+            foreach (var item in this.addressElapsedCache)
+            {
+                if (item.Value is AddressElapsed elapsed && elapsed.Elapsed == TimeSpan.MaxValue)
+                {
+                    staleKeys.Add(item.Key);
+                }
+            }
+
+            foreach (var key in staleKeys)
+            {
+                this.addressElapsedCache.Remove(key);
             }
         }
 
