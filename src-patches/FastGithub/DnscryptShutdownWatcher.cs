@@ -1,4 +1,4 @@
-using FastGithub.DomainResolve;
+﻿using FastGithub.DomainResolve;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -21,8 +21,15 @@ namespace FastGithub
     ///    所以这里必须在处理器里「同步」把 dnscrypt-proxy 送走，预算取 DnscryptLifecycle:StopBudgetMs
     ///    （该值被夹到 4 秒以内，正是为了对上注销/关机的系统时限）。
     ///
-    /// 服务模式不需要本钩子：WindowsServiceLifetime 会响应 SERVICE_CONTROL_SHUTDOWN 与
-    /// 会话变更事件，正常走 host 停止流程。
+    /// 适用边界（务必看清，避免误以为双路注销都可靠）：
+    /// - MSDN 明确 CTRL_LOGOFF_EVENT / CTRL_SHUTDOWN_EVENT 只发给服务进程；交互进程在系统发出
+    ///   这两个信号时已被终止；加载 user32/gdi32 的控制台应用同样收不到。
+    /// - 另外 AttachConsole / FreeConsole 会重置本进程的控制台处理器表，软信号投递过一次后
+    ///   本钩子即失效。
+    /// - 因此桌面形态下真正可靠的是 UI 的 Application.SessionEnding → 杀锚点 → host.StopAsync；
+    ///   本钩子仅作「直接运行 fastgithub.exe 且控制台未被让出」时的尽力而为兜底，
+    ///   CTRL_CLOSE_EVENT（关控制台窗口）是它在控制台形态下唯一稳定命中的事件。
+    /// - 服务模式由 WindowsServiceLifetime / SCM 负责停机，不需要本钩子抢占信号语义。
     /// </summary>
     internal sealed class DnscryptShutdownWatcher : IHostedService
     {

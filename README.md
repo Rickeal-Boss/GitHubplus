@@ -64,6 +64,11 @@
 | `.gitattributes` | 强制 `*.cmd` / `*.bat` 以 CRLF 签出，规避 cmd.exe 对「中文 + LF」的解析 bug | **新增** |
 | `src-patches/FastGithub.HttpServer/ServiceCollectionExtensions.cs` | 证书缓存加 `SizeLimit=4096` 上限 + 淘汰时 `Dispose`，避免大量不同子域导致 `X509Certificate2` 句柄无界增长 | **新增**（构建时覆盖进克隆源码） |
 | `src-patches/Directory.Build.props` | `TargetFramework` 由 `net7.0`（2024-05 EOL）迁移到 `net10.0` LTS（EOL 2028-11），self-contained 发布不再内嵌无补丁运行时 | **新增**（构建时覆盖进克隆源码） |
+| `src-patches/FastGithub.DomainResolve/DnscryptState.cs` | dnscrypt 生命周期状态枚举、快照、控制器接口与 `DnscryptLifecycleOptions`（手动绑定，规避 Trimmed 下反射绑定丢值） | **新增 v3.1.0**（构建时 `[2ah]` 拷入） |
+| `src-patches/FastGithub.DomainResolve/DnsClient.cs` | 补 `ClearCaches()`，网络恢复后清掉断网期写入的最长 10 分钟空解析缓存 | **覆盖 v3.1.0** |
+| `src-patches/FastGithub.DomainResolve/ProcessGracefulStop.cs` | 进程模式 CTRL_BREAK / 非 Windows SIGTERM 软停机信号，及控制台归属判定 | **新增 v3.1.0** |
+| `src-patches/FastGithub.DomainResolve/NetworkWatchService.cs` | 断网看护（连续判定 + 事件提前唤醒 + 恢复重启 + 清缓存）与 `AddDnscryptLifecycle` 注册扩展 | **新增 v3.1.0** |
+| `src-patches/FastGithub/DnscryptShutdownWatcher.cs` | 引擎侧 `SetConsoleCtrlHandler` 注销 / 关机 / 关窗口钩子 | **新增 v3.1.0** |
 
 > 把 `appsettings.*.json` 片段放进 FastGithub 仓库的 `FastGithub/appsettings/` 目录即可生效（该目录下的 `appsettings.*.json` 会被自动加载）。
 
@@ -85,7 +90,7 @@ build-portable.cmd
 1. **前置检测** `.NET 10 SDK`（`where dotnet`）；缺失则直接报错退出。
 2. **按已审计的固定 commit 精确拉取** FastGithub（含 `@dnscrypt-proxy` 目录，**非子模块**，无需 `--recurse-submodules`）。不再 `git clone --depth 1` 追最新代码——当前 pin 在 `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（见脚本顶部 `UPSTREAM_COMMIT`），升级需显式改这一行。
 3. **改写托盘「检测更新」链接**为本仓库 `Rickeal-Boss/GitHubplus`（`MainWindow.xaml.cs` 的 `RELEASES_URI`）。
-4. **注入 UI 增强补丁**：把 `src-patches/FastGithub.UI/` 下的 `Program.cs`、`MainWindow.xaml`、`AcceleratorPanel.xaml(.cs)` 覆盖进 `FastGithub.UI/`，新增「加速」标签页与加速控制面板（启停开关 + 网址勾选 + HF 模式切换）。**不改 FastGithub 核心代码**。
+4. **注入 UI 增强补丁**：`[2c]` 把 `src-patches/FastGithub.UI/` 下的 `Program.cs`、`MainWindow.xaml`、`AcceleratorPanel.xaml(.cs)` **逐文件** `copy /Y` 进 `FastGithub.UI/`（不是整目录覆盖），新增「加速」标签页与加速控制面板；`Program.cs` 另接了 `Application.SessionEnding`。发布前还有 `[2ah]` 单独把 5 个生命周期文件（`DnscryptState.cs` / `DnsClient.cs` / `ProcessGracefulStop.cs` / `NetworkWatchService.cs` / `DnscryptShutdownWatcher.cs`）拷入克隆源码，并由 `Startup.cs` 的 `AddDnscryptLifecycle` + `AddHostedService<DnscryptShutdownWatcher>` 完成注册。
 5. **注入配置片段**：新增的 `appsettings.huggingface.json` 直接拷入 `FastGithub/appsettings/`；GitHub 主站片段同样由 `src-patches/FastGithub/appsettings/appsettings.github.json` 补丁覆盖（含 `collector.github.com` 直返 204）。上游 commit 已 pin，不再存在「上游更新后被旧副本回退」的风险。
 6. 两步发布（先 UI 再核心单文件，`--self-contained` + `PublishTrimmed` + `PublishSingleFile`）→ 自带运行时、免安装。
 7. **修正 dnscrypt-proxy 目录命名**：代码期望 `dnscrypt-proxy/`，但仓库目录是 `@dnscrypt-proxy/`，脚本把 `win-x64/dnscrypt-proxy.exe` + `dnscrypt-proxy.toml` 拷成 `dnscrypt-proxy/`，否则 DNS 防污染会静默失效（降级到 FallbackDns，仍可加速）。拷完再对发布目录里的 `dnscrypt-proxy.toml` 做后处理：摘掉自引用的拉源地址（该地址会被本工具自己投毒到 `127.0.0.1`，导致拉源请求绕回本机反代并超时），并删除未启用的 relays 源段，镜像源保留。
@@ -154,6 +159,8 @@ dotnet publish -c Release -p:PublishSingleFile=true -p:PublishTrimmed=true --sel
 - **断网**：连续探测判定网络不可用后，优雅暂停 `dnscrypt-proxy`（引擎常驻，加速主链路与系统改动不动）；期间域名拨测自动跳过，不空转刷日志。
 - **恢复**：网络恢复后自动重新拉起 `dnscrypt-proxy` 并清空断网期写入的 DNS 失败缓存（否则最长 10 分钟空解析）。**用户手动点过「停止加速」的不会被自动恢复**。
 - 停机预算、软信号开关、看护周期与抖动阈值在 `appsettings.json` 的 `DnscryptLifecycle` 节可配（预算上限 4000ms，防配置拖死注销窗口）。
+
+> ⚠ **边界与验证提示**：① 默认 `NetworkCheck: interfaces` 只看「是否有 Up 且带网关/可路由地址的非回环网卡」，**仅外网中断而局域网仍 Up**（宽带掉线、Portal 未认证）或 VPN 虚拟网卡常驻不会触发；需要更贴近真实可用可改 `probe`（代价是 captive portal 误判）。② 默认 `SoftSignal: auto` 要求「引擎独占控制台」；桌面模式下 dnscrypt 与引擎可能共享同一控制台，此时软信号会按设计跳过、直接走 `Kill` + Job Object 兜底，**请勿把「软信号已投递」当作默认既成事实**，以引擎日志 `已向 dnscrypt-proxy（PID=…）投递 CTRL_BREAK 软信号` / `已优雅退出` 为准。③ 引擎侧控制台钩子只对「附加了控制台且未加载 user32/gdi32 的控制台进程」可靠，桌面模式请以 UI 的 `Application.SessionEnding` 为主路径；直接运行 `fastgithub.exe`（不经 UI）时注销钩子需额外真机验证。
 
 ---
 
@@ -317,6 +324,19 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.1.0 ]======`；UI 窗口标题应为 `FastGithub.UI v3.1.0`。
 - 注意：`<Version>` 必须是**纯数字**（`3.1.0`）。写成 `3.1.0-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
 
+**生命周期自适应验收（v3.1.0）**
+- 运行中注销并重新登录：`fastgithub.exe` / `dnscrypt-proxy.exe` 均已退出，`ProxyOverride` 无本工具追加条目、`hosts` 已还原；引擎日志出现 `正在主动关闭，因为父进程已退出` 或 `收到 用户注销/系统关机`。
+- 软信号是否真的生效：停机时查引擎日志有无 `已向 dnscrypt-proxy（PID=…）投递 CTRL_BREAK 软信号` 与 `已优雅退出`；若只有 `强杀兜底`，说明 `auto` 口径下控制台不独占，属预期降级（可临时设 `SoftSignal: on` 对比验证）。
+- 断网：禁用网卡后约 2 个探测周期（默认 30s 内）日志出现 `暂停 dnscrypt-proxy`，`netstat -ano | findstr 5533` 无监听，测速日志不再空转。
+- 恢复：重新启用网卡后出现 `网络已恢复`、`dnscrypt-proxy` 重新监听 5533，`https://github.com` 正常；**断网期间不要勾选站点**（见下方已知限制）。
+- 用户意图优先：手动点「停止加速」后断网 / 恢复，引擎不再出现。
+
+**已知限制（v3.1.0，真机验证前请知悉）**
+- 断网已被看护暂停后，若在 UI 勾选/取消站点，既有 `ApplyAndRestart()` 会重启整个引擎，新引擎会再次拉起 `dnscrypt-proxy`，约 30s 后才被重新暂停。**验收断网场景期间请勿勾选站点**；彻底修复需 UI 与引擎共享在线状态，排在后续版本。
+- 引擎侧 `SetConsoleCtrlHandler` 不是「双路注销」中的可靠一路：MSDN 明确 `CTRL_LOGOFF/SHUTDOWN` 只发给服务进程；`AttachConsole`/`FreeConsole`（软信号投递）会重置处理器表。桌面形态以 UI `Application.SessionEnding` → 杀锚点 → `host.StopAsync()` 为准；不经 UI 直接运行 `fastgithub.exe` 的注销行为需真机验证。
+- `SoftSignal: auto` 要求引擎独占控制台，桌面形态下 dnscrypt 与引擎可能共享控制台，此时按设计跳过软信号、直接 `Kill` + Job Object 兜底。是否真送达以日志 `已向 dnscrypt-proxy（PID=…）投递 CTRL_BREAK 软信号` / `已优雅退出` 为准。
+- 引擎启动瞬间即断网时，首轮探测只建基线 + 连续 2 次确认，最坏约 30s（2 个探测周期）才暂停 dnscrypt；语义上避免网络栈未就绪即判死刑。
+
 ---
 
 ## 10. 许可证
@@ -330,10 +350,10 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyon
 仓库已配置 `.github/workflows/build.yml`：推送 `fix`（或 tag、或手动）即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip`。
 
 - ⚠️ **更正（此前表述有误）**：**只有打 `v*` tag 才会发布 Release**。推送 `fix` / 手动触发只会执行构建与断言，并把 zip 作为 **Artifact** 上传（保留 7 天），**不会**创建或更新 Release，也不存在 `ci-<运行号>` 这类标签。发布逻辑见 `build.yml` 的 `Publish Release (仅 tag 触发)` 步（条件 `startsWith(github.ref,'refs/tags/v')`）。
-- **打 `v*` tag**（如 `v3.0.0`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。
-- 构建时自动把托盘右键"检测更新"跳转链接指向本仓库 `Rickeal-Boss/GitHubplus`：`build-portable.cmd` 的 `[2b]` 步**整文件覆盖** `FastGithub.UI/MainWindow.xaml.cs`（上游原版指向 `dotnetcore/FastGithub`），并非字符串 patch；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 覆盖进克隆源码，新增「加速」标签页与加速控制面板）。
+- **打 `v*` tag**（如 `v3.1.0`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。
+- 构建时自动把托盘右键"检测更新"跳转链接指向本仓库 `Rickeal-Boss/GitHubplus`：`build-portable.cmd` 的 `[2b]` 步**整文件覆盖** `FastGithub.UI/MainWindow.xaml.cs`（上游原版指向 `dotnetcore/FastGithub`），并非字符串 patch；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 下的文件**逐文件 copy** 进克隆源码，新增「加速」标签页与加速控制面板）；生命周期相关 5 个新文件由 `[2ah]` 单独拷入。
 - **上游供应链已 pin**：上游 `creazyboyone/FastGithub` 已固定到已审计的 commit `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（2025-08-01）。构建脚本 `build-portable.cmd` 只按这个 SHA 精确拉取，并在拉取后校验 `git rev-parse HEAD` 与之相等，不等即失败。**要升级上游版本，必须显式修改 `build-portable.cmd` 顶部的 `UPSTREAM_COMMIT`**——CI 里也有一道断言，改动该行会被校验。原 `dotnetcore/FastGithub` 已删库、现 fork 不再维护，切勿回到「追最新代码」的做法。
-- **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录，任一不符即构建失败。
+- **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录；并断言 `[2ah]` 生命周期补丁全部生效、`<Version>3.1.0</Version>`、构建脚本 `echo` 行无裸 `->`、仓库根目录无历史垃圾文件，任一不符即构建失败。
 - **取构件 / Release**：仓库 **Actions** 页 → 对应运行 → **Artifacts**；或 **Releases** 页直接下载。
 - **手动触发**：Actions 页 → 选工作流 → **Run workflow**。
 - **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 10 SDK；CI 只构建、不加载 WinDivert 驱动（无需管理员）。

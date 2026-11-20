@@ -98,7 +98,7 @@ powershell -NoProfile -Command "$p='%SRC%\FastGithub\FastGithub.csproj'; $c=Get-
 if errorlevel 1 goto :fail
 echo   [OK] 已将 7.0.0-rc* 固定为 10.0.12
 
-echo [2ac] 修复 Yarp.ReverseProxy 高危依赖（1.1.1 -> 1.1.2；GHSA-jrjw-qgr2-wfcg / CVE-2023-33141）
+echo [2ac] 修复 Yarp.ReverseProxy 高危依赖（1.1.1 → 1.1.2；GHSA-jrjw-qgr2-wfcg / CVE-2023-33141）
 :: 上游 FastGithub.HttpServer.csproj 直接引用 Yarp.ReverseProxy 1.1.1（受影响范围 <=1.1.1），
 :: 存在 DoS（CWE-400 不受控资源消耗，CVSS 7.5）。1.x 线已有修复版 1.1.2，故保持在 1.x 内升级，
 :: 不跨到 2.x（1.x -> 2.x 是破坏性变更，上游 HttpReverseProxyMiddleware 与本仓库补丁的
@@ -108,7 +108,7 @@ powershell -NoProfile -Command "$q=[char]34; $old='Yarp.ReverseProxy'+$q+' Versi
 if errorlevel 1 goto :fail
 echo   [OK] 已将 Yarp.ReverseProxy 1.1.1 升到 1.1.2
 
-echo [2ad] 修复 Microsoft.Extensions.Caching.Memory 高危依赖（6.0.1 -> 10.0.12；GHSA-qj66-m88j-hmgj / CVE-2024-43483）
+echo [2ad] 修复 Microsoft.Extensions.Caching.Memory 高危依赖（6.0.1 → 10.0.12；GHSA-qj66-m88j-hmgj / CVE-2024-43483）
 :: 上游 FastGithub.DomainResolve.csproj 直接引用 Microsoft.Extensions.Caching.Memory 6.0.1
 :: （受影响范围 <=6.0.1），存在哈希洪泛导致的 DoS。项目已统一为 net10.0，故升到 10.0.12，
 :: 与 FastGithub.csproj 已 pin 的 Microsoft.Extensions.Hosting 10.0.12 对齐，避免 6.x/10.x 混装；
@@ -122,7 +122,7 @@ echo [2g] 注入服务注册补丁（证书缓存加容量上限 + 淘汰时 Dis
 :: 而 CertService 以域名为 key 缓存 X509Certificate2（非托管句柄），访问大量不同子域会无界增长。
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.HttpServer\ServiceCollectionExtensions.cs" "%SRC%\FastGithub.HttpServer\ServiceCollectionExtensions.cs" || goto :fail
 
-echo [2h] 注入构建属性补丁（TargetFramework net7.0 -> net10.0 LTS）
+echo [2h] 注入构建属性补丁（TargetFramework net7.0 → net10.0 LTS）
 :: 上游 Directory.Build.props 全局 net7.0（EOL），self-contained 发布会内嵌无补丁运行时。
 :: FastGithub.UI.csproj 显式 net45，不受 Directory.Build.props 覆盖。
 copy /Y "%SCRIPT_DIR%src-patches\Directory.Build.props" "%SRC%\Directory.Build.props" || goto :fail
@@ -143,7 +143,7 @@ echo [2j] 注入域名解析补丁（解析全失败时负缓存 30 秒 + 下发
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DomainResolver.cs" "%SRC%\FastGithub.DomainResolve\DomainResolver.cs"
 if errorlevel 1 goto :fail
 
-echo [2k] 注入测速周期补丁（后台测速周期 1s -> 15s）
+echo [2k] 注入测速周期补丁（后台测速周期 1s → 15s）
 copy /Y "%SCRIPT_DIR%src-patches\FastGithub.DomainResolve\DomainResolveHostedService.cs" "%SRC%\FastGithub.DomainResolve\DomainResolveHostedService.cs"
 if errorlevel 1 goto :fail
 

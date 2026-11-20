@@ -992,7 +992,25 @@ jobs:
             echo "::error::[2ah] 生命周期配置未走手动绑定（ConfigurationBinder 反射路径在 PublishTrimmed 下会静默丢值）"
             exit 1
           fi
-          echo "  已确认 断网看护 / 注销关机钩子 / DI 注册 / 裁剪兜底 全部生效"
+          if ! grep -q '启动失败：{ex.Message}' "src/FastGithub.DomainResolve/DnscryptProxy.cs"; then
+            echo "::error::[2ah] dnscrypt 启动异常未就地降级，异常上抛会终结测速循环（v3.1.0 回归）"
+            exit 1
+          fi
+          echo "  已确认 断网看护 / 注销关机钩子 / DI 注册 / 启动失败降级 / 裁剪兜底 全部生效"
+
+          # [PATCH] 防 cmd 重定向污染：echo 行里的裸 -> 会被 cmd.exe 当成输出重定向符，
+          # 把 echo 后半段写进以 "1.1.2；..." 之类 token 为名的文件（v3.1.0 曾误提交 4 个）。
+          if grep -nE '^[[:space:]]*echo[[:space:]].*->' build-portable.cmd; then
+            echo "::error::build-portable.cmd 的 echo 行含裸 ->，cmd 会把它当重定向符生成垃圾文件"
+            exit 1
+          fi
+          for junk in "1.1.2；GHSA-jrjw-qgr2-wfcg" "10.0.12；GHSA-qj66-m88j-hmgj" "15s）" "net10.0"; do
+            if [ -e "$junk" ]; then
+              echo "::error::仓库根目录残留 cmd 重定向生成的垃圾文件：$junk"
+              exit 1
+            fi
+          done
+          echo "  已确认构建脚本无 echo 重定向隐患、根目录无历史垃圾文件"
 
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"

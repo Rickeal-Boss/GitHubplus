@@ -329,7 +329,7 @@ namespace FastGithub.UI
         }
 
         /// <summary>
-        /// [PATCH] 注销 / 关机通知（由 MainWindow.OnSessionEnding 调用）。
+        /// [PATCH] 注销 / 关机通知（由 Application.SessionEnding 事件调用，见 Main 中 app.SessionEnding 接线）。
         ///
         /// 为何需要它：GUI 子系统进程收不到控制台的 CTRL_LOGOFF_EVENT / CTRL_SHUTDOWN_EVENT，
         /// 只能靠 WM_ENDSESSION（WPF 的 Window.SessionEnding）感知。

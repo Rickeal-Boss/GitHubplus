@@ -216,7 +216,19 @@ namespace FastGithub.DomainResolve
                     }
 
                     this.SetState(DnscryptState.Starting, reason, this.Current.LastStopWasGraceful);
-                    await this.StartCoreAsync(cancellationToken);
+                    try
+                    {
+                        await this.StartCoreAsync(cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        // [PATCH] 启动失败只降级，不得上抛：上游与 v3.0.x 的 StartAsync 内部有 try/catch，
+                        // 异常若冒到 DomainResolveHostedService.ExecuteAsync，会直接终结测速 while 循环，
+                        // 进程存活期内再无测速/缓存刷新，新域名永不解析（toml 被锁、目录缺失时高发）。
+                        this.logger.LogWarning($"{this.processName}启动失败：{ex.Message}");
+                        this.SetState(DnscryptState.Stopped, $"启动失败：{ex.Message}", false);
+                        return DnscryptState.Stopped;
+                    }
                     var running = this.LocalEndPoint != null;
                     this.SetState(running ? DnscryptState.Running : DnscryptState.Stopped,
                         running ? reason : $"{reason}（未成功：进程或监听端点缺失）",
