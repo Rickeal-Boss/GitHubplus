@@ -319,10 +319,10 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 同时开着游戏 / 视频 / 其它网站，网络照常——不匹配的域名不被 WinDivert 拦截。
 - 若其它软件也变慢/断流：说明 WinDivert 过滤表达式或驱动异常，需排查（正常情况不应发生）。
 
-**版本号（v3.1.1）**
-- 本工具当前版本号为 **v3.1.1**。引擎启动横幅与 UI 标题**同源**，都取自 `Directory.Build.props` 的 `<Version>`（UI 标题读 `AssemblyInformationalVersionAttribute`）。
-- 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.1.1 ]======`；UI 窗口标题应为 `FastGithub.UI v3.1.1`。
-- 注意：`<Version>` 必须是**纯数字**（`3.1.1`）。写成 `3.1.1-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
+**版本号（v3.1.2）**
+- 本工具当前版本号为 **v3.1.2**。引擎启动横幅与 UI 标题**同源**，都取自 `Directory.Build.props` 的 `<Version>`（UI 标题读 `AssemblyInformationalVersionAttribute`）。
+- 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.1.2 ]======`；UI 窗口标题应为 `FastGithub.UI v3.1.2`。
+- 注意：`<Version>` 必须是**纯数字**（`3.1.2`）。写成 `3.1.2-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
 
 **v3.1.1 变更（全局逐行审查收尾）**
 - G-1：`clean.cmd` 改为条件删除 hosts 回滚记录——`HostsPatchedSegments` 非空时保留并提示先启动引擎自愈，避免强杀后卸载永久丢失还原依据；订正过时提示。
@@ -332,10 +332,11 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 0003：启动失败区分宿主取消与真实失败，就地回收 `LocalEndPoint` / Job / 进程；服务模式跳过控制台钩子注册（交 SCM）；补全 MSDN 边界说明。
 - G-6 / G-7：`[5i]` relays 段终止条件不再把注释行当段尾；非 Windows SIGTERM 错误码改用 `GetLastPInvokeError`。
 
-**fix 分支后续修补（N-1，尚未发布 Release）**
+**v3.1.2 修补（N-1 + 卸载播报诚实度，已随 v3.1.2 Release 发布）**
 - N-1 卸载自愈悖论：`clean.cmd` 的 `[0/7]` 先按命令行精确结束本工具锚点（`ping -t 127.0.0.1`，服务模式先 `sc stop fastgithub`），等待 8s 让引擎走完 `host.StopAsync()` 优雅链（hosts 还原并自删记录、代理回滚），再对残余进程 `/F` 兜底——避免 G-1 新逻辑在目标场景下陷入「保留记录 → 启动引擎 → 又写记录」死循环。
 - `[3b/7]` 保留分支与 G-1 复验步骤订正为「启动引擎 → UI 点『停止加速』优雅退出 → 重跑脚本」：仅启动引擎无效，因为 `HostsConflictSolver.SolveAsync` 先 `RestoreAsync` 还原、随后会重新注释原本冲突的 hosts 行并再次写记录。此过程会临时重装 CA，重跑脚本会清理。
-- CI 新增 2 条防回归断言（锚点结束逻辑 + 保留分支提示文案）。本次仅推 `fix`，不打 tag、不发 Release；S-1/S-2/S-3/S-4/D-2 等待真机日志后再出补丁。
+- 0005 卸载播报诚实度（真机日志暴露的两处「宣告成功 ≠ 实际成功」）：`[6/7]` 把 `sc stop/delete WinDivert` 提到 `rd` 之前并复查目录，残留时明确警告（L-1）；`[2/7]` 与末尾 `--get` 先用 `where git` 判存在，无 git 时跳过而非谎报「已清理 / 已恢复默认」（L-2）；证书删除后重新枚举复核、`cacert` 目录 `rd` 后 `if exist` 复查（L-3 部分闭环）。所有清理动作本身未改，仅改检测与播报。
+- CI 新增 4 条防回归断言（N-1 两条 + L-1/L-2 各一条，全用 ASCII grep 模式规避 locale 差异）。本次已打 `v3.1.2` tag 发布 Release；S-1/S-2/S-3/S-4/D-2 等待真机日志后再出补丁。
 
 **生命周期自适应验收（v3.1.0）**
 - 运行中注销并重新登录：`fastgithub.exe` / `dnscrypt-proxy.exe` 均已退出，`ProxyOverride` 无本工具追加条目、`hosts` 已还原；引擎日志出现 `正在主动关闭，因为父进程已退出` 或 `收到 用户注销/系统关机`。
@@ -345,8 +346,9 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 用户意图优先：手动点「停止加速」后断网 / 恢复，引擎不再出现。
 
 **补充真机验收（v3.1.1，针对本轮收尾项）**
-- G-2 复验：不经 UI，直接带锚点运行 `fastgithub.exe`，分别用 Ctrl+C、关闭控制台窗口、注销三种方式停止；检查日志是否出现 `dnscrypt-proxy 已优雅退出` 与 hosts / ProxyOverride 还原记录。v3.1.0 预期失败，v3.1.1 应在 6s 窗口内完成。
-- G-1 复验（N-1 订正）：强杀引擎（hosts 仍被注释）→ 运行 `clean.cmd` → 正常路径应先结束锚点、引擎优雅停机并自删记录，`[3b/7]` 显示「已删除空的 hosts 回滚记录键」；若仍显示「检测到未消费的 hosts 回滚记录……予以保留」，则启动引擎 → 在 UI 点「停止加速」优雅退出（会临时重装 CA）→ 重跑 `clean.cmd` → 记录被清理。**仅启动引擎再强杀无效**：`SolveAsync` 自愈后会重新注释原本冲突的行并再次写入记录。
+- **已销账（真机卸载日志，跑的确实是 N-1 修复后的 `clean.cmd`）**：`[0/7]` 只结束 1 个锚点 + `FastGithub.UI.exe`、无 `/F` 强杀残留输出 → 8s 窗口内引擎自行走完优雅链；`[3/7]` 无 ProxyOverride 追加条目与条目记录；`[3b/7]` 无未消费的 `HostsPatchedSegments`；`[1/7]` 移除 2 张 CA 根证书、`[4/7]` 删除 `cacert`（含明文私钥）、`[7/7]` 删除 WinDivert 服务。16 处新版关键文案逐字命中，排除页面缓存旧包。边界：这是正常停机的**正常路径**；证书/私钥删除结论来自「管理员权限 + 执行删除 + 无报错 + 无残留警告」，非逐项复核注册表/文件系统。
+- G-2 复验（**唯一仍缺的真机日志，不阻塞 v3.1.2 发布**）：不经 UI，直接带锚点运行 `fastgithub.exe`，分别用 Ctrl+C、关闭控制台窗口、注销三种方式停止；检查日志是否出现 `dnscrypt-proxy 已优雅退出` 与 hosts / ProxyOverride 还原记录。v3.1.0 预期失败，v3.1.2 应在 6s 窗口内完成。
+- G-1 / N-1 兜底分支复验（**未被本次真机日志覆盖，可选补测**）：强杀引擎（hosts 仍被注释）→ 运行 `clean.cmd` → 正常路径应先结束锚点、引擎优雅停机并自删记录，`[3b/7]` 显示「已删除空的 hosts 回滚记录键」；若仍显示「检测到未消费的 hosts 回滚记录……予以保留」，则启动引擎 → 在 UI 点「停止加速」优雅退出（会临时重装 CA）→ 重跑 `clean.cmd` → 记录被清理。**仅启动引擎再强杀无效**：`SolveAsync` 自愈后会重新注释原本冲突的行并再次写入记录。
 - G-3 复验：检查 `HKCU\...\Internet Settings\ProxyOverride` 中 `*.fastgithub.com` 是否被 `clean.cmd` 移除。
 - 0003 回归：临时锁住 `dnscrypt-proxy.toml` 或移走 `dnscrypt-proxy/` 目录启动引擎，确认引擎不崩、测速循环仍在、无残留 `dnscrypt-proxy.exe`、解析降级到 FallbackDns。
 - 句柄稳定性：反复断网 / 恢复 20 次，观察 `fastgithub.exe` 句柄数稳定。
@@ -371,10 +373,10 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyon
 仓库已配置 `.github/workflows/build.yml`：推送 `fix`（或 tag、或手动）即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip`。
 
 - ⚠️ **更正（此前表述有误）**：**只有打 `v*` tag 才会发布 Release**。推送 `fix` / 手动触发只会执行构建与断言，并把 zip 作为 **Artifact** 上传（保留 7 天），**不会**创建或更新 Release，也不存在 `ci-<运行号>` 这类标签。发布逻辑见 `build.yml` 的 `Publish Release (仅 tag 触发)` 步（条件 `startsWith(github.ref,'refs/tags/v')`）。
-- **打 `v*` tag**（如 `v3.1.1`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。
+- **打 `v*` tag**（如 `v3.1.2`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。v3.1.2 起 Release notes 写详细记录：版本变更 + 真机证据 + 已知未覆盖边界 + 卸载指引 + SHA256。
 - 构建时自动把托盘右键"检测更新"跳转链接指向本仓库 `Rickeal-Boss/GitHubplus`：`build-portable.cmd` 的 `[2b]` 步**整文件覆盖** `FastGithub.UI/MainWindow.xaml.cs`（上游原版指向 `dotnetcore/FastGithub`），并非字符串 patch；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 下的文件**逐文件 copy** 进克隆源码，新增「加速」标签页与加速控制面板）；生命周期相关 5 个新文件由 `[2ah]` 单独拷入。
 - **上游供应链已 pin**：上游 `creazyboyone/FastGithub` 已固定到已审计的 commit `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（2025-08-01）。构建脚本 `build-portable.cmd` 只按这个 SHA 精确拉取，并在拉取后校验 `git rev-parse HEAD` 与之相等，不等即失败。**要升级上游版本，必须显式修改 `build-portable.cmd` 顶部的 `UPSTREAM_COMMIT`**——CI 里也有一道断言，改动该行会被校验。原 `dotnetcore/FastGithub` 已删库、现 fork 不再维护，切勿回到「追最新代码」的做法。
-- **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录；并断言 `[2ah]` 生命周期补丁全部生效、`<Version>3.1.1</Version>`、构建脚本 `echo` 行无裸 `->`、仓库根目录无历史垃圾文件，任一不符即构建失败。
+- **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录；并断言 `[2ah]` 生命周期补丁全部生效、`<Version>3.1.2</Version>`、构建脚本 `echo` 行无裸 `->`、仓库根目录无历史垃圾文件，任一不符即构建失败。v3.1.2 另加 4 条 `clean.cmd` 防回归断言（锚点 / SolveAsync / `where git` ×2 / `sc query WinDivert` ×2）。
 - **取构件 / Release**：仓库 **Actions** 页 → 对应运行 → **Artifacts**；或 **Releases** 页直接下载。
 - **手动触发**：Actions 页 → 选工作流 → **Run workflow**。
 - **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 10 SDK；CI 只构建、不加载 WinDivert 驱动（无需管理员）。

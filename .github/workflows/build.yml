@@ -743,21 +743,21 @@ jobs:
           fi
           echo "  已确认 git 缺失时跳过配置（不再误告警）"
 
-          # [P3] 版本号 3.1.1：产品版本号（引擎启动横幅与 UI 标题同源）
+          # [P3] 版本号 3.1.2：产品版本号（引擎启动横幅与 UI 标题同源）
           F48="src/Directory.Build.props"
           if [ ! -f "$F48" ]; then
             echo "::error::[P3] 补丁未生效：$F48 不存在"
             exit 1
           fi
-          if ! grep -q "<Version>3.1.1</Version>" "$F48"; then
-            echo "::error::[P3] Directory.Build.props 版本号未升到 3.1.1"
+          if ! grep -q "<Version>3.1.2</Version>" "$F48"; then
+            echo "::error::[P3] Directory.Build.props 版本号未升到 3.1.2"
             exit 1
           fi
           if grep -q "2.1.5" "$F48"; then
             echo "::error::[P3] Directory.Build.props 仍残留旧版本号 2.1.5"
             exit 1
           fi
-          echo "  已确认产品版本号已升到 3.1.1"
+          echo "  已确认产品版本号已升到 3.1.2"
 
           # [P3] 客户端主动中断降噪：不再记告警（IsError 已判为非错误）
           F49="src/FastGithub.HttpServer/HttpMiddlewares/RequestLoggingMilldeware.cs"
@@ -1037,7 +1037,7 @@ jobs:
             echo "::error::Unix SIGTERM 错误码未用 GetLastPInvokeError 读取 libc errno（G-7 回退）"
             exit 1
           fi
-          # [N-1] clean.cmd 卸载自愈悖论防回归（fix 分支后续修补，未发 Release）
+          # [N-1] clean.cmd 卸载自愈悖论防回归（v3.1.1 引入，v3.1.2 随 Release 发布）
           if ! grep -q "ping -t 127.0.0.1" clean.cmd; then
             echo "::error::clean.cmd 未精确结束锚点，强杀绕过优雅停机链会让 hosts 回滚记录陷入保留死循环（N-1 回退）"
             exit 1
@@ -1046,7 +1046,18 @@ jobs:
             echo "::error::clean.cmd 保留分支仍提示仅启动引擎自愈，SolveAsync 会再次写记录（N-1 回退）"
             exit 1
           fi
-          echo "  已确认 v3.1.1 收尾项与 N-1 卸载修补全部生效"
+          # [L-1/L-2] v3.1.2 播报诚实度防回归，全部用 ASCII grep 模式规避中文 locale 差异
+          GIT_PROBE_COUNT="$(grep -c 'where git' clean.cmd || true)"
+          if [ "$GIT_PROBE_COUNT" -lt 2 ]; then
+            echo "::error::clean.cmd 未完整探测 git 存在性（[2/7] 与末尾各一处），git 缺失时会误报「已清理」（L-2 回退）"
+            exit 1
+          fi
+          WINDIVERT_QUERY_COUNT="$(grep -c 'sc query WinDivert' clean.cmd || true)"
+          if [ "$WINDIVERT_QUERY_COUNT" -lt 2 ]; then
+            echo "::error::clean.cmd 未在删除 WinDivert 驱动副本前先停服务，.sys 被占用后仍误报已删除（L-1 回退）"
+            exit 1
+          fi
+          echo "  已确认 v3.1.1 收尾项、N-1 卸载修补与 v3.1.2 播报诚实度修补全部生效"
 
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
@@ -1096,9 +1107,35 @@ jobs:
 
           # 产物 SHA256 写进 Release notes，用户下载后可自行校验
           SHA256="$(cat dist/SHA256.txt 2>/dev/null || echo '(未生成)')"
-          NOTES="Windows 免安装包（自动构建）。
-          解压后以管理员身份运行 FastGithub.UI.exe，首次运行信任本地 CA。
-          卸载：以管理员身份运行包内 clean.cmd（移除本机 CA、恢复 git 配置、删除私钥）。
+          # v3.1.2 起 Release notes 写详细记录：版本变更 + 真机证据 + 未覆盖边界 + 校验值。
+          NOTES="Windows 免安装包（自动构建），产物由本 tag 对应的源码直接构建。
+
+          ## v3.1.2 变更（相对已发布的 v3.1.1）
+          - N-1 卸载自愈悖论：clean.cmd [0/7] 按命令行精确结束本工具锚点（ping -t 127.0.0.1，服务模式先 sc stop），等 8s 让引擎走完 host.StopAsync() 优雅链后再对残余进程 /F 兜底；[3b/7] 保留分支改为「启动引擎 → UI 点停止加速 → 重跑脚本」，破解「保留记录 → 启动引擎 → 又写记录」死循环。
+          - L-1 WinDivert 副本删除：sc stop/delete WinDivert 提到 rd 之前；rd 后复查目录，残留时明确警告「重启后重跑或手动删除」，不再出现「Access is denied 却报已删除」。
+          - L-2 git 播报： [2/7] 与末尾校验先用 where git 判存在；无 git 时跳过而非谎报「已清理 / 已恢复默认」，并给出手动检查 .gitconfig 的指引。
+          - L-3 部分闭环：证书删除后重新枚举复核、cacert 目录 rd 后 if exist 复查，成功才播报成功。
+          - CI：新增 4 条防回归断言（N-1 两条 + L-1/L-2 各一条），全部用 ASCII grep 模式规避 locale 差异；产品版本号升到 3.1.2，引擎横幅与 UI 标题同源。
+
+          ## 真机证据（N-1 修复后的 clean.cmd 完整卸载日志）
+          - [0/7] 只结束 1 个锚点 + FastGithub.UI.exe，无 /F 强杀残留输出 → 8s 窗口内引擎自行完成优雅停机链。
+          - [3/7] 未发现本工具追加的 ProxyOverride 条目、未找到条目记录 → 引擎回滚并自删记录。
+          - [3b/7] 未找到 hosts 回滚记录 → 无未消费 HostsPatchedSegments，不存在永久残留。
+          - [1/7] 移除 2 张 CA 根证书；[4/7] 删除 cacert 目录（含明文私钥 fastgithub.key）；[7/7] 删除 WinDivert 内核服务。
+          - 16 处新版 clean.cmd 关键文案逐字命中，确认跑的是修复后版本而非页面缓存。
+
+          ## 已知未覆盖（不阻塞本次发布，按 README 排期）
+          - G-2 复验：不经 UI 直接带锚点运行 fastgithub.exe，Ctrl+C / 关控制台 / 注销三种停法尚未取得真机日志。
+          - N-1 兜底分支：强杀引擎使 hosts 仍被注释 → clean.cmd 保留提示 → 两步法 → 重跑，这条路径尚未真机走过。
+          - F-1 / F-2：本次日志走「无需处理」分支，clean.cmd 的 ProxyOverride 解析逻辑未被触发。
+          - S-1/S-2/S-3/S-4/D-2、bench-stability.ps1 8 项、H-1/H-3/H-4 工程项：等真机日志后另排补丁。
+
+          ## 使用与卸载
+          - 解压后以管理员身份运行 FastGithub.UI.exe，首次运行信任本地 CA。
+          - 卸载：以管理员身份运行包内 clean.cmd（移除 CA、恢复 git 配置、删除私钥与驱动副本）。
+          - 不要分发运行过的程序目录：cacert/fastgithub.key 是本机生成的明文 CA 私钥。
+          - 源码与验收记录：https://github.com/Rickeal-Boss/GitHubplus/tree/fix
+
           校验：FastGithub-Portable-win-x64.zip 的 SHA256 = ${SHA256}"
 
           # 幂等：重推同一 tag 重跑时不因 release 已存在而失败（不加 --cleanup-tag，避免删掉触发本次构建的 tag）

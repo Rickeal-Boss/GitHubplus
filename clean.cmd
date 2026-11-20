@@ -63,14 +63,21 @@ ping -n 3 127.0.0.1 >nul
 echo.
 
 echo [1/7] 移除根证书存储中的 FastGithub CA（精确匹配 Subject=CN=FastGithub 且自签名，见 CertService.cs 的 new X500DistinguishedName($"CN={nameof(FastGithub)}")）
-powershell -NoProfile -Command "$actualSubject = 'CN=FastGithub'; $c = @(Get-ChildItem 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root' -EA SilentlyContinue | Where-Object { $_.Subject -eq $actualSubject -and $_.Issuer -eq $_.Subject }); if ($c.Count -gt 0) { $c | ForEach-Object { Remove-Item $_.PSPath -Force -EA SilentlyContinue }; Write-Host ('  已移除 ' + $c.Count + ' 张证书') } else { Write-Host '  未找到 FastGithub 证书' }"
+powershell -NoProfile -Command "$actualSubject = 'CN=FastGithub'; $filter = { $_.Subject -eq $actualSubject -and $_.Issuer -eq $_.Subject }; $c = @(Get-ChildItem 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root' -EA SilentlyContinue | Where-Object $filter); if ($c.Count -gt 0) { $c | ForEach-Object { Remove-Item $_.PSPath -Force -EA SilentlyContinue }; $left = @(Get-ChildItem 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root' -EA SilentlyContinue | Where-Object $filter); if ($left.Count -gt 0) { Write-Host ('  [警告] 仍有 ' + $left.Count + ' 张 FastGithub CA 未能删除，请手动检查证书存储') } else { Write-Host ('  已移除 ' + $c.Count + ' 张证书（删除后已复核）') } } else { Write-Host '  未找到 FastGithub 证书' }"
 echo.
 
 echo [2/7] 恢复 git 配置
-git config --global --unset http.sslVerify 2>nul
-git config --global --unset http.sslBackend 2>nul
-git config --global --unset http.sslCAInfo 2>nul
-echo   已清理 http.sslVerify / http.sslBackend / http.sslCAInfo
+:: [L-2] 先判 git 是否存在：原实现三条 --unset 被 2>nul 吞掉失败后仍无条件宣告「已清理」，
+:: 真机日志里 git 未安装时 [2/7] 依旧显示「已清理」、末尾 --get 报错却被当成「无残留」。
+where git >nul 2>&1
+if errorlevel 1 (
+    echo   未检测到 git，跳过全局配置清理
+) else (
+    git config --global --unset http.sslVerify 2>nul
+    git config --global --unset http.sslBackend 2>nul
+    git config --global --unset http.sslCAInfo 2>nul
+    echo   已清理 http.sslVerify / http.sslBackend / http.sslCAInfo
+)
 echo   注：若你希望保留 Schannel 后端（让 git 读取 Windows 证书存储），
 echo       可自行执行：git config --global http.sslBackend schannel
 echo.
@@ -103,7 +110,11 @@ set "FOUND_CACERT=0"
 if exist "cacert" (
     rd /S /Q "cacert"
     set "FOUND_CACERT=1"
-    echo   已删除 cacert 目录（含私钥 fastgithub.key）
+    if exist "cacert" (
+        echo   [警告] cacert 目录未完全删除（私钥可能仍被占用），请关闭相关程序后重跑本脚本
+    ) else (
+        echo   已删除 cacert 目录（含私钥 fastgithub.key）
+    )
 ) else (
     echo   未在当前目录找到 cacert
 )
@@ -135,9 +146,18 @@ echo [6/7] 删除 WinDivert 驱动本地副本
 :: WindivertDotnet 会把 WinDivert64.sys / WinDivert.dll 解压到 %APPDATA%\WindivertDotnet\...
 :: 且「文件存在即跳过」，永不复查、卸载也不清理。该目录位于用户可写位置，
 :: 被替换后会在下次提权运行时加载为内核驱动 —— 必须清掉。
+:: [L-1] 必须先停并删除 WinDivert 内核驱动服务，再删 .sys 副本。原实现把服务删除放在 [7/7]，
+:: 驱动仍加载时 rd /S /Q 对 WinDivert64.sys 必然 Access is denied；且 rd 后无条件 echo「已删除」、
+:: 不查结果，失败被静默包装成成功（真机日志已复现：报错与「已删除」同时出现）。
+sc query WinDivert >nul 2>&1 && (sc stop WinDivert >nul 2>&1 & sc delete WinDivert >nul 2>&1)
 if exist "%APPDATA%\WindivertDotnet" (
     rd /S /Q "%APPDATA%\WindivertDotnet"
-    echo   已删除 %APPDATA%\WindivertDotnet（WinDivert 驱动本地副本）
+    if exist "%APPDATA%\WindivertDotnet" (
+        echo   [警告] WindivertDotnet 未完全删除（WinDivert64.sys 可能仍被占用）
+        echo          请重启电脑后重跑本脚本，或手动删除：%APPDATA%\WindivertDotnet
+    ) else (
+        echo   已删除 %APPDATA%\WindivertDotnet（WinDivert 驱动本地副本）
+    )
 ) else (
     echo   未找到 %APPDATA%\WindivertDotnet
 )
@@ -148,12 +168,18 @@ echo [7/7] 删除可能残留的 Windows 服务并回显残留
 :: 服务不存在时 sc delete 会报错，用 >nul 2>&1 忽略。另外本工具运行时会由 WindivertDotnet 在 SCM 注册名为 WinDivert 的内核驱动服务，卸载时需一并删除。
 sc query fastgithub >nul 2>&1 && (sc stop fastgithub >nul 2>&1 & sc delete fastgithub >nul 2>&1 & echo   已删除服务 fastgithub)
 sc query FastGithub.dnscrypt-proxy >nul 2>&1 && (sc stop FastGithub.dnscrypt-proxy >nul 2>&1 & sc delete FastGithub.dnscrypt-proxy >nul 2>&1 & echo   已删除服务 FastGithub.dnscrypt-proxy)
+:: WinDivert 服务已在 [6/7] 提前停止并删除（否则 .sys 删不掉）；这里仅作幂等兜底。
 sc query WinDivert >nul 2>&1 && (sc stop WinDivert >nul 2>&1 & sc delete WinDivert >nul 2>&1 & echo   已删除内核驱动服务 WinDivert)
 echo.
-echo   --- git 全局配置残留（下面两行有输出即表示仍有遗留）---
-git config --global --get http.sslVerify
-git config --global --get http.sslBackend
-echo   以上均无输出 = git 全局配置已恢复默认。
+echo   --- git 全局配置残留检查 ---
+where git >nul 2>&1
+if errorlevel 1 (
+    echo   未检测到 git，跳过残留检查
+) else (
+    git config --global --get http.sslVerify
+    git config --global --get http.sslBackend
+    echo   以上两行无输出 = 对应配置已恢复默认；若有输出，请按上面的取值手动清理。
+)
 echo.
 
 if "!FOUND_CACERT!"=="0" (
