@@ -61,7 +61,14 @@ namespace FastGithub
         /// <param name="builder"></param>
         public static void ConfigureWebHost(this WebApplicationBuilder builder)
         {
-            builder.WebHost.UseShutdownTimeout(TimeSpan.FromSeconds(1d));
+            // [PATCH] 上游的 1s 关闭超时与 DnscryptLifecycle:StopBudgetMs（默认 2500、上限 4000）
+            // 结构性冲突：Host 会在 1s 后取消传给所有 IHostedService.StopAsync 的 token，
+            // 而 AppHostedService.ExecuteAsync 卡在同步 WaitForExit() 时不响应取消，
+            // 反向遍历的第一个 StopAsync 就会耗光这 1s —— 后续 dnscrypt 停机与 hosts 还原
+            // 拿到已取消 token，直接跳过（gate.WaitAsync 抛 OCE / ReadAllBytesAsync 抛 OCE）。
+            // 放宽到 6s = StopBudgetMaxMs(4s) + 2s 余量，仍远小于注销/关机的 20s 系统窗口；
+            // 正常路径（UI 先杀锚点）各服务秒级完成，6s 只是上限，不会拖慢退出。
+            builder.WebHost.UseShutdownTimeout(TimeSpan.FromSeconds(6d));
             builder.WebHost.UseKestrel(kestrel =>
             {
                 kestrel.NoLimit();

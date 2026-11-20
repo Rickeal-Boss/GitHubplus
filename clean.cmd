@@ -70,7 +70,7 @@ echo [3/7] 从系统代理绕过列表移除被追加的加速域名
 :: 且只在优雅停机时移除；进程被强杀/崩溃时这些条目会永久留在绕过列表里。
 :: 这里只删除「能在大写小写无关的精确匹配本程序 appsettings 片段里出现过的域名」的条目，
 :: 不碰用户自己配置的任何条目（含 <local>）。
-powershell -NoProfile -Command "$key='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'; $cur=(Get-ItemProperty -Path $key -Name ProxyOverride -EA SilentlyContinue).ProxyOverride; if ([string]::IsNullOrEmpty($cur)) { Write-Host '  未设置 ProxyOverride，无需处理' } else { $files=@(); if (Test-Path 'appsettings') { $files += @(Get-ChildItem 'appsettings' -Filter 'appsettings.*.json' -EA SilentlyContinue) }; if (Test-Path 'appsettings\disabled') { $files += @(Get-ChildItem 'appsettings\disabled' -Filter 'appsettings.*.json' -EA SilentlyContinue) }; if (Test-Path 'appsettings.json') { $files += @(Get-Item 'appsettings.json') }; $pats=@(); foreach($f in $files) { try { $j=(Get-Content -Raw $f.FullName) -replace '(?m)^\s*//.*$','' | ConvertFrom-Json; if ($j.FastGithub.DomainConfigs) { foreach($n in $j.FastGithub.DomainConfigs.PSObject.Properties.Name) { $pats += $n } } } catch { } }; if ($pats.Count -eq 0) { Write-Host '  未解析到任何域名模式（配置片段可能已被删除），为安全起见不改动注册表'; Write-Host ('  当前 ProxyOverride：' + $cur) } else { $parts=@($cur -split ';' | Where-Object { $_ -ne '' }); $kept=@($parts | Where-Object { $pats -notcontains $_ }); if ($kept.Count -lt $parts.Count) { $new=($kept -join ';'); Set-ItemProperty -Path $key -Name ProxyOverride -Value $new; Write-Host ('  已移除 ' + ($parts.Count - $kept.Count) + ' 条加速域名绕过项（共 ' + $pats.Count + ' 个模式参与匹配）'); Write-Host ('  现值：' + $new); Write-Host '  注：其余条目（含其它工具写入的）保持原样，未做任何改动' } else { Write-Host '  ProxyOverride 中未发现本工具追加的条目（保持原样）' } } }"
+powershell -NoProfile -Command "$key='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'; $cur=(Get-ItemProperty -Path $key -Name ProxyOverride -EA SilentlyContinue).ProxyOverride; if ([string]::IsNullOrEmpty($cur)) { Write-Host '  未设置 ProxyOverride，无需处理' } else { $files=@(); if (Test-Path 'appsettings') { $files += @(Get-ChildItem 'appsettings' -Filter 'appsettings.*.json' -EA SilentlyContinue) }; if (Test-Path 'appsettings\disabled') { $files += @(Get-ChildItem 'appsettings\disabled' -Filter 'appsettings.*.json' -EA SilentlyContinue) }; if (Test-Path 'appsettings.json') { $files += @(Get-Item 'appsettings.json') }; $pats=@(); $owned=(Get-ItemProperty -Path $key -Name 'FastGithubProxyOverrideOwned' -EA SilentlyContinue).FastGithubProxyOverrideOwned; if(-not [string]::IsNullOrEmpty($owned)){ $pats += @($owned -split ';' | Where-Object { $_ -ne '' }) }; $pats += '*.fastgithub.com'; foreach($f in $files) { try { $j=(Get-Content -Raw $f.FullName) -replace '(?m)^\s*//.*$','' | ConvertFrom-Json; if ($j.FastGithub.DomainConfigs) { foreach($n in $j.FastGithub.DomainConfigs.PSObject.Properties.Name) { $pats += $n } } } catch { } }; if ($pats.Count -eq 0) { Write-Host '  未解析到任何域名模式（配置片段可能已被删除），为安全起见不改动注册表'; Write-Host ('  当前 ProxyOverride：' + $cur) } else { $parts=@($cur -split ';' | Where-Object { $_ -ne '' }); $kept=@($parts | Where-Object { $pats -notcontains $_ }); if ($kept.Count -lt $parts.Count) { $new=($kept -join ';'); Set-ItemProperty -Path $key -Name ProxyOverride -Value $new; Write-Host ('  已移除 ' + ($parts.Count - $kept.Count) + ' 条加速域名绕过项（共 ' + $pats.Count + ' 个模式参与匹配）'); Write-Host ('  现值：' + $new); Write-Host '  注：其余条目（含其它工具写入的）保持原样，未做任何改动' } else { Write-Host '  ProxyOverride 中未发现本工具追加的条目（保持原样）' } } }"
 :: 本工具新版会用同一个键下的 FastGithubProxyOverrideOwned 记录自己写入过哪些条目
 :: （用于取消勾选时精确回滚）。卸载时一并删掉，避免留下无意义的残留值。
 powershell -NoProfile -Command "$k='HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'; if (Get-ItemProperty -Path $k -Name 'FastGithubProxyOverrideOwned' -EA SilentlyContinue) { Remove-ItemProperty -Path $k -Name 'FastGithubProxyOverrideOwned' -EA SilentlyContinue; Write-Host '  已删除 ProxyOverride 条目记录 FastGithubProxyOverrideOwned' } else { Write-Host '  未找到 ProxyOverride 条目记录（无需处理）' }"
@@ -83,8 +83,9 @@ echo [3b/7] 删除本工具写入的浏览器模拟值与 hosts 回滚记录
 :: 不动同键下其它进程/用户写入的条目。
 powershell -NoProfile -Command "$name='FastGithub.UI.exe'; $paths=@('HKCU:\Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_BROWSER_EMULATION','HKCU:\Software\Microsoft\Internet Explorer\Main\FeatureControl\FEATURE_96DPI_PIXEL'); $n=0; foreach ($p in $paths) { if (Get-ItemProperty -Path $p -Name $name -EA SilentlyContinue) { Remove-ItemProperty -Path $p -Name $name -EA SilentlyContinue; $n++; Write-Host ('  已删除 ' + $name + ' @ ' + $p) } }; if ($n -eq 0) { Write-Host '  未找到本工具写入的浏览器模拟值（无需处理）' }"
 :: 新版 HostsConflictSolver 会在 HKLM\SOFTWARE\FastGithub 记录 hosts 被改写前的原始行段字节（base64），
-:: 供崩溃后自愈恢复。正常退出会自行删除；进程被强杀/崩溃时残留，卸载时一并清理。
-powershell -NoProfile -Command "if (Test-Path 'HKLM:\SOFTWARE\FastGithub') { Remove-Item -Path 'HKLM:\SOFTWARE\FastGithub' -Recurse -Force -EA SilentlyContinue; if (Test-Path 'HKLM:\SOFTWARE\FastGithub') { Write-Host '  [警告] HKLM\SOFTWARE\FastGithub 删除失败（可能被占用）' } else { Write-Host '  已删除 hosts 回滚记录 HKLM\SOFTWARE\FastGithub' } } else { Write-Host '  未找到 hosts 回滚记录（无需处理）' }"
+:: 供崩溃后自愈恢复。正常退出会自行删除；进程被强杀/崩溃时残留。
+:: 卸载时必须保留未消费的记录（否则 hosts 永久无法自愈），待下次启动引擎消费后再清理。
+powershell -NoProfile -Command "$k='HKLM:\SOFTWARE\FastGithub'; if (Test-Path $k) { $rec=(Get-ItemProperty -Path $k -Name 'HostsPatchedSegments' -EA SilentlyContinue).HostsPatchedSegments; if ([string]::IsNullOrEmpty($rec)) { Remove-Item -Path $k -Recurse -Force -EA SilentlyContinue; if (Test-Path $k) { Write-Host '  [警告] HKLM\SOFTWARE\FastGithub 删除失败（可能被占用）' } else { Write-Host '  已删除空的 hosts 回滚记录键（无未消费记录）' } } else { Write-Host '  [重要] 检测到未消费的 hosts 回滚记录 HostsPatchedSegments：上次引擎可能非正常退出，hosts 仍被本工具改写。'; Write-Host '  该记录是 [2y] 补丁按字节还原 hosts 的唯一依据，本次卸载予以保留。'; Write-Host '  请先启动一次引擎让其自动恢复 hosts，再重新运行本脚本完成清理。' } } else { Write-Host '  未找到 hosts 回滚记录（无需处理）' }"
 echo.
 
 echo [4/7] 删除本地 CA 与私钥
@@ -160,7 +161,9 @@ echo   1. 请勿分发运行过的程序目录——其中的 cacert\fastgithub.
 echo      CA 私钥（明文），任何拿到它的人都能解密你已勾选站点的 HTTPS 流量。
 echo   2. 若需在其它机器使用，请用官方 Release 的干净压缩包重新解压运行。
 echo   3. 浏览器 / 系统可能缓存了旧证书，建议重启终端与浏览器后再验证。
-echo   4. hosts 文件中被注释掉的加速域名条目不会被本脚本恢复（上游未实现恢复逻辑），
-echo      如你原本自定义过 hosts，请自行检查系统 hosts 文件。
+echo   4. hosts 文件：本仓库 [2y] 已实现按字节精确还原（正常停机自动恢复；非正常退出
+echo      后由下次启动自愈，依据 HKLM\SOFTWARE\FastGithub 的 HostsPatchedSegments 记录）。
+echo      若上面提示「检测到未消费的回滚记录」，请先启动一次引擎完成自愈，再重跑本脚本。
+echo      如你原本自定义过 hosts，仍建议检查一次 C:\Windows\System32\drivers\etc\hosts。
 echo.
 pause

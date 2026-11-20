@@ -22,8 +22,11 @@ namespace FastGithub
     ///    （该值被夹到 4 秒以内，正是为了对上注销/关机的系统时限）。
     ///
     /// 适用边界（务必看清，避免误以为双路注销都可靠）：
-    /// - MSDN 明确 CTRL_LOGOFF_EVENT / CTRL_SHUTDOWN_EVENT 只发给服务进程；交互进程在系统发出
-    ///   这两个信号时已被终止；加载 user32/gdi32 的控制台应用同样收不到。
+    /// - 这两个信号本意是发给每个控制台进程留出清理窗口，但交互式会话的进程随即被系统
+    ///   终止，实际能靠它收尾的只有服务；加载了 user32/gdi32 的控制台应用会被识别为
+    ///   Windows 应用而收不到（需隐藏窗口处理 WM_QUERYENDSESSION / WM_ENDSESSION），
+    ///   无控制台的 GUI 进程同样收不到。服务进程即便注册了 handler，停机也应由 SCM /
+    ///   WindowsServiceLifetime 接管，而非本钩子抢占信号语义。
     /// - 另外 AttachConsole / FreeConsole 会重置本进程的控制台处理器表，软信号投递过一次后
     ///   本钩子即失效。
     /// - 因此桌面形态下真正可靠的是 UI 的 Application.SessionEnding → 杀锚点 → host.StopAsync；
@@ -74,6 +77,13 @@ namespace FastGithub
         {
             if (OperatingSystem.IsWindows() == false)
             {
+                return Task.CompletedTask;
+            }
+            // [PATCH] 服务模式由 WindowsServiceLifetime / SCM 负责停机：本钩子若仍注册并对
+            // CTRL_CLOSE / LOGOFF / SHUTDOWN 返回 TRUE，会与 SCM 的关停链抢信号语义。
+            if (Environment.UserInteractive == false)
+            {
+                this.logger.LogDebug("服务模式：跳过控制台事件处理器注册，停机交由 WindowsServiceLifetime / SCM");
                 return Task.CompletedTask;
             }
 

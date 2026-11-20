@@ -220,12 +220,23 @@ namespace FastGithub.DomainResolve
                     {
                         await this.StartCoreAsync(cancellationToken);
                     }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        // [PATCH] 宿主停机触发的取消应交回上层，不记成「启动失败」误导排查
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         // [PATCH] 启动失败只降级，不得上抛：上游与 v3.0.x 的 StartAsync 内部有 try/catch，
                         // 异常若冒到 DomainResolveHostedService.ExecuteAsync，会直接终结测速 while 循环，
                         // 进程存活期内再无测速/缓存刷新，新域名永不解析（toml 被锁、目录缺失时高发）。
-                        this.logger.LogWarning($"{this.processName}启动失败：{ex.Message}");
+                        this.logger.LogWarning(ex, $"{this.processName}启动失败：{ex.Message}");
+                        // [PATCH] StartCoreAsync 可能在「已创建子进程 / 已绑定 Job」之后才抛异常。
+                        // 必须就地回收：否则会留下一个状态为 Stopped、看护永远不会回收的 dnscrypt
+                        // 子进程与 Job 句柄（看护只从 Running/Starting 暂停、只从 PausedByNetwork 恢复）。
+                        this.LocalEndPoint = null;
+                        this.ReleaseJob();
+                        this.DisposeProcess();
                         this.SetState(DnscryptState.Stopped, $"启动失败：{ex.Message}", false);
                         return DnscryptState.Stopped;
                     }

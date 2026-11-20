@@ -191,7 +191,7 @@ namespace FastGithub.DomainResolve
             {
                 if (kill(targetPid, SIGTERM) != 0)
                 {
-                    logger.LogDebug("向 {Pid} 发送 SIGTERM 失败，将由强杀兜底（GetLastWin32Error={Error}，非 libc errno）", targetPid, Marshal.GetLastWin32Error());
+                    logger.LogDebug("向 {Pid} 发送 SIGTERM 失败，将由强杀兜底（GetLastPInvokeError={Error}，即 libc errno）", targetPid, Marshal.GetLastPInvokeError());
                     return false;
                 }
                 logger.LogDebug("已向 dnscrypt-proxy（PID={Pid}）投递 SIGTERM 软信号。", targetPid);
