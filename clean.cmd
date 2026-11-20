@@ -39,15 +39,25 @@ echo   [OK] 已获取管理员权限
 echo.
 
 echo [0/7] 结束正在运行的加速进程
+:: [N-1] 先精确结束本工具的 ping 锚点（UI 用 ping -t 127.0.0.1 作为引擎的名义父进程）。
+:: fastgithub.exe 的 AppHostedService.WaitForParentProcessExitAsync 检测到父进程退出后会走
+:: host.StopAsync() 优雅链：hosts 按字节还原并自删 HKLM 回滚记录、ProxyOverride 同步回滚。
+:: 直接 /F 强杀会绕过这条链，留下未消费记录，令 [3b/7] 保留分支与「启动引擎自愈」陷入死循环。
+:: 按命令行精确匹配，不用 /IM ping.exe，避免误杀机器上其它 ping。
+powershell -NoProfile -Command "$anchors=@(Get-CimInstance Win32_Process -EA SilentlyContinue | Where-Object { $_.Name -eq 'ping.exe' -and $_.CommandLine -like '*-t 127.0.0.1*' }); foreach($p in $anchors) { Invoke-CimMethod -InputObject $p -MethodName Terminate -EA SilentlyContinue | Out-Null }; Write-Host ('  已结束 ' + $anchors.Count + ' 个本工具锚点进程（ping -t 127.0.0.1）')"
+:: 服务模式没有锚点，先请求 SCM 优雅停止（未安装服务时报错忽略）
+sc query fastgithub >nul 2>&1 && sc stop fastgithub >nul 2>&1
+:: 等优雅停机跑完：UseShutdownTimeout(6s) 容纳 StopBudgetMs(2500/4000)，再留 2s 余量
+ping -n 9 127.0.0.1 >nul
 :: 不用 `tasklist | find` 判断进程是否存在：Git Bash / Cygwin 等终端的 PATH 里，
 :: GNU find 会抢在 Windows 的 find.exe 前面，导致管道判断静默失效（引擎其实没被停掉）。
-:: 直接 taskkill：命中返回 0，未找到进程返回非 0，忽略即可。
+:: 残留进程直接 taskkill：命中返回 0，未找到进程返回非 0，忽略即可。
 taskkill /IM fastgithub.exe /F >nul 2>&1
-if not errorlevel 1 echo   已结束 fastgithub.exe
+if not errorlevel 1 echo   已强杀残留 fastgithub.exe
 taskkill /IM FastGithub.UI.exe /F >nul 2>&1
 if not errorlevel 1 echo   已结束 FastGithub.UI.exe
 taskkill /IM dnscrypt-proxy.exe /F >nul 2>&1
-if not errorlevel 1 echo   已结束 dnscrypt-proxy.exe
+if not errorlevel 1 echo   已强杀残留 dnscrypt-proxy.exe
 :: 给进程退出与文件句柄释放留出时间
 ping -n 3 127.0.0.1 >nul
 echo.
@@ -85,7 +95,7 @@ powershell -NoProfile -Command "$name='FastGithub.UI.exe'; $paths=@('HKCU:\Softw
 :: 新版 HostsConflictSolver 会在 HKLM\SOFTWARE\FastGithub 记录 hosts 被改写前的原始行段字节（base64），
 :: 供崩溃后自愈恢复。正常退出会自行删除；进程被强杀/崩溃时残留。
 :: 卸载时必须保留未消费的记录（否则 hosts 永久无法自愈），待下次启动引擎消费后再清理。
-powershell -NoProfile -Command "$k='HKLM:\SOFTWARE\FastGithub'; if (Test-Path $k) { $rec=(Get-ItemProperty -Path $k -Name 'HostsPatchedSegments' -EA SilentlyContinue).HostsPatchedSegments; if ([string]::IsNullOrEmpty($rec)) { Remove-Item -Path $k -Recurse -Force -EA SilentlyContinue; if (Test-Path $k) { Write-Host '  [警告] HKLM\SOFTWARE\FastGithub 删除失败（可能被占用）' } else { Write-Host '  已删除空的 hosts 回滚记录键（无未消费记录）' } } else { Write-Host '  [重要] 检测到未消费的 hosts 回滚记录 HostsPatchedSegments：上次引擎可能非正常退出，hosts 仍被本工具改写。'; Write-Host '  该记录是 [2y] 补丁按字节还原 hosts 的唯一依据，本次卸载予以保留。'; Write-Host '  请先启动一次引擎让其自动恢复 hosts，再重新运行本脚本完成清理。' } } else { Write-Host '  未找到 hosts 回滚记录（无需处理）' }"
+powershell -NoProfile -Command "$k='HKLM:\SOFTWARE\FastGithub'; if (Test-Path $k) { $rec=(Get-ItemProperty -Path $k -Name 'HostsPatchedSegments' -EA SilentlyContinue).HostsPatchedSegments; if ([string]::IsNullOrEmpty($rec)) { Remove-Item -Path $k -Recurse -Force -EA SilentlyContinue; if (Test-Path $k) { Write-Host '  [警告] HKLM\SOFTWARE\FastGithub 删除失败（可能被占用）' } else { Write-Host '  已删除空的 hosts 回滚记录键（无未消费记录）' } } else { Write-Host '  [重要] 检测到未消费的 hosts 回滚记录 HostsPatchedSegments：上次引擎可能非正常退出，hosts 仍被本工具改写。'; Write-Host '  该记录是 [2y] 补丁按字节还原 hosts 的唯一依据，本次卸载予以保留。'; Write-Host '  处理（两步，缺一不可）：启动一次引擎 → 在 UI 点「停止加速」让它优雅退出 → 再重跑本脚本。'; Write-Host '  仅启动引擎再强杀无效：SolveAsync 自愈后会重新注释原本冲突的 hosts 行并再次写入记录。'; Write-Host '  此过程会临时重装 CA（前面步骤已删除），最后重跑本脚本会一并清掉。' } } else { Write-Host '  未找到 hosts 回滚记录（无需处理）' }"
 echo.
 
 echo [4/7] 删除本地 CA 与私钥
@@ -163,7 +173,8 @@ echo   2. 若需在其它机器使用，请用官方 Release 的干净压缩包�
 echo   3. 浏览器 / 系统可能缓存了旧证书，建议重启终端与浏览器后再验证。
 echo   4. hosts 文件：本仓库 [2y] 已实现按字节精确还原（正常停机自动恢复；非正常退出
 echo      后由下次启动自愈，依据 HKLM\SOFTWARE\FastGithub 的 HostsPatchedSegments 记录）。
-echo      若上面提示「检测到未消费的回滚记录」，请先启动一次引擎完成自愈，再重跑本脚本。
+echo      若上面提示「检测到未消费的回滚记录」，请在启动引擎后在 UI 点「停止加速」优雅退出
+echo      （此过程会临时重装 CA，属预期现象，重跑本脚本会清理），再重跑本脚本；仅启动再强杀无效。
 echo      如你原本自定义过 hosts，仍建议检查一次 C:\Windows\System32\drivers\etc\hosts。
 echo.
 pause

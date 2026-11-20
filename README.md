@@ -332,6 +332,11 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 0003：启动失败区分宿主取消与真实失败，就地回收 `LocalEndPoint` / Job / 进程；服务模式跳过控制台钩子注册（交 SCM）；补全 MSDN 边界说明。
 - G-6 / G-7：`[5i]` relays 段终止条件不再把注释行当段尾；非 Windows SIGTERM 错误码改用 `GetLastPInvokeError`。
 
+**fix 分支后续修补（N-1，尚未发布 Release）**
+- N-1 卸载自愈悖论：`clean.cmd` 的 `[0/7]` 先按命令行精确结束本工具锚点（`ping -t 127.0.0.1`，服务模式先 `sc stop fastgithub`），等待 8s 让引擎走完 `host.StopAsync()` 优雅链（hosts 还原并自删记录、代理回滚），再对残余进程 `/F` 兜底——避免 G-1 新逻辑在目标场景下陷入「保留记录 → 启动引擎 → 又写记录」死循环。
+- `[3b/7]` 保留分支与 G-1 复验步骤订正为「启动引擎 → UI 点『停止加速』优雅退出 → 重跑脚本」：仅启动引擎无效，因为 `HostsConflictSolver.SolveAsync` 先 `RestoreAsync` 还原、随后会重新注释原本冲突的 hosts 行并再次写记录。此过程会临时重装 CA，重跑脚本会清理。
+- CI 新增 2 条防回归断言（锚点结束逻辑 + 保留分支提示文案）。本次仅推 `fix`，不打 tag、不发 Release；S-1/S-2/S-3/S-4/D-2 等待真机日志后再出补丁。
+
 **生命周期自适应验收（v3.1.0）**
 - 运行中注销并重新登录：`fastgithub.exe` / `dnscrypt-proxy.exe` 均已退出，`ProxyOverride` 无本工具追加条目、`hosts` 已还原；引擎日志出现 `正在主动关闭，因为父进程已退出` 或 `收到 用户注销/系统关机`。
 - 软信号是否真的生效：停机时查引擎日志有无 `已向 dnscrypt-proxy（PID=…）投递 CTRL_BREAK 软信号` 与 `已优雅退出`；若只有 `强杀兜底`，说明 `auto` 口径下控制台不独占，属预期降级（可临时设 `SoftSignal: on` 对比验证）。
@@ -341,7 +346,7 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 
 **补充真机验收（v3.1.1，针对本轮收尾项）**
 - G-2 复验：不经 UI，直接带锚点运行 `fastgithub.exe`，分别用 Ctrl+C、关闭控制台窗口、注销三种方式停止；检查日志是否出现 `dnscrypt-proxy 已优雅退出` 与 hosts / ProxyOverride 还原记录。v3.1.0 预期失败，v3.1.1 应在 6s 窗口内完成。
-- G-1 复验：强杀引擎（hosts 仍被注释）→ 运行 `clean.cmd` → 应看到「检测到未消费的 hosts 回滚记录……予以保留」→ 启动一次引擎 → hosts 自动还原 → 重跑 `clean.cmd` → 记录被清理。
+- G-1 复验（N-1 订正）：强杀引擎（hosts 仍被注释）→ 运行 `clean.cmd` → 正常路径应先结束锚点、引擎优雅停机并自删记录，`[3b/7]` 显示「已删除空的 hosts 回滚记录键」；若仍显示「检测到未消费的 hosts 回滚记录……予以保留」，则启动引擎 → 在 UI 点「停止加速」优雅退出（会临时重装 CA）→ 重跑 `clean.cmd` → 记录被清理。**仅启动引擎再强杀无效**：`SolveAsync` 自愈后会重新注释原本冲突的行并再次写入记录。
 - G-3 复验：检查 `HKCU\...\Internet Settings\ProxyOverride` 中 `*.fastgithub.com` 是否被 `clean.cmd` 移除。
 - 0003 回归：临时锁住 `dnscrypt-proxy.toml` 或移走 `dnscrypt-proxy/` 目录启动引擎，确认引擎不崩、测速循环仍在、无残留 `dnscrypt-proxy.exe`、解析降级到 FallbackDns。
 - 句柄稳定性：反复断网 / 恢复 20 次，观察 `fastgithub.exe` 句柄数稳定。

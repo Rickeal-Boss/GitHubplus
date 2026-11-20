@@ -1037,7 +1037,16 @@ jobs:
             echo "::error::Unix SIGTERM 错误码未用 GetLastPInvokeError 读取 libc errno（G-7 回退）"
             exit 1
           fi
-          echo "  已确认 v3.1.1 收尾项（停机窗口 / hosts 回滚 / 代理清理 / relays 后处理 / errno）全部生效"
+          # [N-1] clean.cmd 卸载自愈悖论防回归（fix 分支后续修补，未发 Release）
+          if ! grep -q "ping -t 127.0.0.1" clean.cmd; then
+            echo "::error::clean.cmd 未精确结束锚点，强杀绕过优雅停机链会让 hosts 回滚记录陷入保留死循环（N-1 回退）"
+            exit 1
+          fi
+          if ! grep -q "SolveAsync" clean.cmd; then
+            echo "::error::clean.cmd 保留分支仍提示仅启动引擎自愈，SolveAsync 会再次写记录（N-1 回退）"
+            exit 1
+          fi
+          echo "  已确认 v3.1.1 收尾项与 N-1 卸载修补全部生效"
 
           if [ ! -d dist ]; then
             echo "::error::dist 目录不存在，构建产物缺失"
