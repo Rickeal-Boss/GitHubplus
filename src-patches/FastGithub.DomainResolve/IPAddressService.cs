@@ -195,17 +195,25 @@ namespace FastGithub.DomainResolve
         /// </summary>
         public void ClearFailureCaches()
         {
-            // 先收集再删，避免在任何 MemoryCache 实现上出现「枚举中修改」的歧义
+            // [0008 / P1] 修正 v3.1.3 的运行时崩溃：Microsoft.Extensions.Caching.Memory 10.0.12
+            // 的 MemoryCache 声明是 `public class MemoryCache : IMemoryCache`（IMemoryCache : IDisposable），
+            // 既不实现 System.Collections.IEnumerable，也不实现泛型 IEnumerable，全文无 GetEnumerator。
+            // 上一版为消除 CS1579 把它 cast 成 (IEnumerable) —— 非 sealed 类到接口的 cast 编译期
+            // 不校验，所以 CI 变绿；但运行时必然抛 InvalidCastException。本方法唯一调用点是
+            // NetworkWatchService 的 ResumeAsync 成功分支，故每次断网恢复都会失效，且被看护的
+            // 单轮 catch 吞成一条 Warning（D-2 修复归零、连续判定计数被重置）。
+            //
+            // .NET 10 起 MemoryCache 提供 Keys（IEnumerable<object>），配合本文件已在用的
+            // TryGetValue<TItem> 扩展精确取回条目：无反射、无 cast、无接口依赖。
+            // Keys 底层是 lazy yield，故先 ToArray() 快照再分两轮处理，避免枚举中修改。
             var staleKeys = new List<object>();
-            // [0007-fix] MemoryCache 只显式实现非泛型 IEnumerable（GetEnumerator 为显式接口实现），
-            // 直接 foreach MemoryCache 类型变量编译失败（CI 实测：CS01579 does not contain public GetEnumerator）。
-            // cast 到 IEnumerable 并用 KeyValuePair<object, object> 显式类型枚举：MemoryCache.GetEnumerator()
-            // 的 Current 运行时即 KeyValuePair<object, object>（CacheEntry 转换而来），类型安全。
-            foreach (KeyValuePair<object, object> item in (System.Collections.IEnumerable)this.addressElapsedCache)
+            foreach (var key in this.addressElapsedCache.Keys.ToArray())
             {
-                if (item.Value is AddressElapsed elapsed && elapsed.Elapsed == TimeSpan.MaxValue)
+                if (this.addressElapsedCache.TryGetValue<AddressElapsed>(key, out var elapsed)
+                    && elapsed is not null
+                    && elapsed.Elapsed == TimeSpan.MaxValue)
                 {
-                    staleKeys.Add(item.Key);
+                    staleKeys.Add(key);
                 }
             }
 

@@ -260,14 +260,20 @@ namespace FastGithub.DomainResolve
                         return DnscryptState.Stopped;
                     }
 
-                    // [PATCH 0007 / S-2b] Start 收尾复查（R2/R3 沙箱实测竞态的根因修复）：
-                    // StartCoreAsync 期间若有 Stop/Suspend 因 gate 超时置位 stopRequested（S-1 改为粘性意图后，
+                    // [PATCH 0007 / S-2b] Start 收尾复查（R2 沙箱实测竞态的根因修复）：
+                    // StartCoreAsync 期间若有 Stop 因 gate 超时置位 stopRequested（S-1 改为粘性意图后，
                     // 该位会一直留着），必须回滚刚拉起的进程，否则宿主已请求停机、dnscrypt 却留在 Running。
                     // 0007 原始补丁只改了 stopRequested 的清位时机（S-1），漏了 Start 收尾复查这一环；
-                    // 沙箱实测报告 R2（T2：20/20 触发孤儿）与 R3（A4：20/20 pause 方向同源竞态）明确指出，
-                    // 同一处修复同时覆盖 Stop 和 Suspend 两个方向（R3 结论）。T2b 实证：补此段后孤儿归零。
+                    // R2 T2（20/20 孤儿）指出缺口，T2b 实证补此段后孤儿归零。
+                    // [0008 订正] stopRequested 的置位点只有两处：StopCoreEntryAsync(pause=false)
+                    // 与 TransitionAsync 的 gate 超时分支（且仅 target==Stopped），Suspend/pause 方向
+                    // 不置位，故本复查实际只覆盖 Stop 方向；R3 A4 若测的是 pause 方向，其机理需另行确认
+                    // （gate 超时后 Suspend 直接 return，需靠下一轮 15s 判定再暂停，并非永久孤儿）。
                     // 回滚操作幂等（与启动失败分支一致），Exited 回调的守卫（ReferenceEquals + State==Running）
                     // 会挡掉旧进程迟到事件；复活失败时 TransitionAsync 落 Stopped，本守卫不再满足，无风暴。
+                    // 已知边界：本回滚只 ReleaseJob/DisposeProcess，不走 StopCoreAsync，
+                    // 服务模式（jobHandle==0）下 SCM 服务与服务定义不会被停止/删除，属极端工况，
+                    // 见 README 已知限制；LastStopWasGraceful 沿用旧值也会与实际（强杀兜底）不符。
                     if (this.stopRequested)
                     {
                         this.LocalEndPoint = null;

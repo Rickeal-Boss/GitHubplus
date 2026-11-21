@@ -319,10 +319,10 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 同时开着游戏 / 视频 / 其它网站，网络照常——不匹配的域名不被 WinDivert 拦截。
 - 若其它软件也变慢/断流：说明 WinDivert 过滤表达式或驱动异常，需排查（正常情况不应发生）。
 
-**版本号（v3.1.3）**
-- 本工具当前版本号为 **v3.1.3**。引擎启动横幅与 UI 标题**同源**，都取自 `Directory.Build.props` 的 `<Version>`（UI 标题读 `AssemblyInformationalVersionAttribute`）。
-- 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.1.3 ]======`；UI 窗口标题应为 `FastGithub.UI v3.1.3`。
-- 注意：`<Version>` 必须是**纯数字**（`3.1.3`）。写成 `3.1.3-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
+**版本号（v3.1.4）**
+- 本工具当前版本号为 **v3.1.4**。引擎启动横幅与 UI 标题**同源**，都取自 `Directory.Build.props` 的 `<Version>`（UI 标题读 `AssemblyInformationalVersionAttribute`）。
+- 验收判据：启动引擎后，应看到 `======[ FastGithub 启动完成，当前版本为 V3.1.4 ]======`；UI 窗口标题应为 `FastGithub.UI v3.1.4`。
+- 注意：`<Version>` 必须是**纯数字**（`3.1.4`）。写成 `3.1.4-rc1` 会让 `ProductionVersion.Parse`（内部用 `Version.Parse`）抛 `FormatException`，引擎静态构造失败即启动崩溃。
 
 **v3.1.1 变更（全局逐行审查收尾）**
 - G-1：`clean.cmd` 改为条件删除 hosts 回滚记录——`HostsPatchedSegments` 非空时保留并提示先启动引擎自愈，避免强杀后卸载永久丢失还原依据；订正过时提示。
@@ -344,7 +344,7 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 
 - **S-1 粘性停止意图**：`stopRequested` 原在 `StopCoreEntryAsync` 的 `finally` 里无条件清回 `false`，Stop 排队在网络恢复 `ResumeAsync` 持锁启动后面时，那次停止会被抹掉。改为只由显式 `StartAsync` 解除；`SuspendAsync`（`pause=true`）不置位，否则会永久拦住恢复。
 - **S-2 崩溃复活**：`Exited` 回调原只清 `LocalEndPoint`，强杀 / 崩溃后状态仍显示 `Running`，解析静默退回 FallbackDns。现在四重守卫（`ReferenceEquals` + `!stopRequested` + `State==Running`）下把状态落到 `PausedByNetwork`，**复用已真机验证过的看护恢复链**，不在事件回调里起异步；复活失败会落 `Stopped`，最多尝试一次，天然避免复活风暴。
-- **S-2b Start 收尾复查**（R2/R3 沙箱实测竞态根因修复）：0007 原补丁的 S-1 只改了 `stopRequested` 的清位时机（粘性意图），漏了 `TransitionAsync` 的 Start 分支在 `StartCoreAsync` 完成后不复查该标志、直接 `SetState(Running)`。沙箱实测报告 R2（T2：20/20 触发 Stop 方向孤儿）与 R3（A4：20/20 触发 Suspend 方向同源竞态）指出此处缺口；T2b 实证补一段收尾复查即令孤儿归零，且一处修复同时覆盖 Stop 和 Suspend 两个方向。现已在 `StartCoreAsync` 之后、`SetState(Running)` 之前补 `if(stopRequested){回滚 Job/Process/端点; SetState(Stopped); return}`，CI 新增 1 条断言锁定。
+- **S-2b Start 收尾复查**（R2 沙箱实测竞态根因修复）：0007 原补丁的 S-1 只改了 `stopRequested` 的清位时机（粘性意图），漏了 `TransitionAsync` 的 Start 分支在 `StartCoreAsync` 完成后不复查该标志、直接 `SetState(Running)`。R2（T2：20/20 触发 Stop 方向孤儿）指出缺口；T2b 实证补一段收尾复查即令孤儿归零。现已在 `StartCoreAsync` 之后、`SetState(Running)` 之前补 `if(stopRequested){回滚 Job/Process/端点; SetState(Stopped); return}`，CI 新增 1 条断言锁定。**[0008 订正]** `stopRequested` 的置位点只有 `StopCoreEntryAsync(pause=false)` 与 gate 超时分支（仅 `target==Stopped`）两处，`Suspend`/pause 方向不置位，故本复查实际只覆盖 Stop 方向；R3 A4 若测的是 pause 方向，其机理需另行确认（gate 超时后 Suspend 直接 return，靠下一轮 15s 判定再暂停，并非永久孤儿）。
 - **S-3 看护自恢复**：单轮异常原会终结整个 `while` 并 `Dispose` 掉 `probeSignal`，之后网络恢复永久失效。改为循环内隔离、清零连续计数、下一轮照常判定。
 - **0006a `hosts.tmp` 占用冲突**（真机 02:06 复现）：临时文件名带 `Guid`、IOException 3×120ms 退避、类级闸门串行化、`finally` 清理残留。
 - **0006b 空闲退化四项**：连接池 idle 1min→10min；空解析保留上次成功 IP（stale-while-error）；失败耗时 5min→30s/1min；恢复后只清失败项。**明确不改**：dnscrypt TTL 1~2min、15s 测速周期、`PooledConnectionLifetime`。
@@ -353,6 +353,17 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 **仍不处理，均为极端工况 / OS 限制 / 证据不足**：注销不经 UI 时的优雅停机（交互式会话收不到 `CTRL_LOGOFF`，真机已确认无孤儿但不走还原链）；`AppHostedService` 同步 `WaitForExit()` 的服务模式停机竞态（真机三种停法全过）；服务模式 + hosts 残留 + 卸载的三重叠加（R-1）；`packages.lock.json`（需 `dotnet restore --locked-mode` 生成）；`ReferenceAssemblies.net45`（需 CI runner 日志确认 targeting pack）；`Set-Content` BOM 不一致（信息级，对 MSBuild/Roslyn 无害）。
 
 **真机基线（可复现，非仿真）**：延迟 direct P50 0.006~0.012s / accel P50 0.019~0.021s，成功率 100%，加速态把 P95 长尾从 0.141~0.146s 削到 0.028~0.042s；反复启停 20 轮句柄 1040→948（斜率 -4.84/轮，无泄漏）；CA 指纹、站点清单、hosts 行数、ProxyOverride 条目数重启前后全一致；关控制台窗口 22ms / Ctrl+C 5ms 优雅退出、注销无孤儿；断网→暂停 4.5s、恢复→可用约 5s。**判据按真机重标定**：断网→暂停实测 7.5~33s、恢复观测 21~40s，旧 README 的「≤17.3s / ≤18s」是仿真口径，请以 `run-all-out/` 实测为基线。
+
+**0008/0009 审查收口（已随 v3.1.4 Release 发布）**
+
+v3.1.3 已合入 0007 全部 12 文件、升版本号、打了 tag 并发布 Release，CI 两个 run（先 failure 后 success）确认编译通过。但**编译绿 ≠ 运行时正确**，发布后两轮独立审查用真实 dll 反射与真 PowerShell 端到端坐实了两个**必现 P1**，均已在 v3.1.4 修复：
+
+- **P1 `ClearFailureCaches()` 运行时 `InvalidCastException`**：`Microsoft.Extensions.Caching.Memory` 10.0.12 的 `MemoryCache` 声明是 `public class MemoryCache : IMemoryCache`（`IMemoryCache : IDisposable`），全文无 `GetEnumerator`，**既不实现非泛型 `IEnumerable`，也不实现泛型 `IEnumerable<KVP>`**。上一版为消除 CS1579（原文误写 CS01579）把它 cast 成 `(System.Collections.IEnumerable)` —— 非 sealed 类到接口的 cast 编译期不校验，CI 因此变绿，运行时却必然抛 `InvalidCastException`。该方法唯一调用点是 `NetworkWatchService` 的 `ResumeAsync` 成功分支，故**每次断网恢复都会失效**；恰好被 S-3 新增的循环内 `catch (Exception)` 兜住，不崩宿主，但会打一条 Warning、把 `offlineStreak/onlineStreak` 清零并 `primed=false`（下一次离线判定要多等一轮 15s），而 D-2 的失败缓存清理归零。现改用 .NET 10 起提供的 `MemoryCache.Keys` 快照 + 已在用的 `TryGetValue<TItem>` 精确取回，无反射、无 cast；CI 新增 2 条双向断言锁死（正向要求 `Keys.ToArray()`、负向禁止 cast）。
+- **P1 `clean.cmd` [3/7] ProxyOverride 清理恒被跳过**（9a34324 引入，真 PowerShell 7.7.0 端到端坐实）：`if ($pats2.Count -eq 0)` 位于 `$pats2=@(...)` 赋值之前；PowerShell 未定义变量为 null、`null.Count=0`，判断恒真 → 永远走「未解析到任何域名模式…不改动注册表」分支，加速域名绕过项卸载后永久残留。真 PowerShell 实测原版写入 0 次、`github.com` 残留；改为按已赋值的 `$pats` 判断后写入 1 次、用户条目完整保留、加速域名精确删除。CI 新增 2 条双向断言（正向要求 `if ($pats.Count -eq 0)`、负向禁止 `if ($pats2.Count -eq 0)`）。
+- **文档订正**：S-2b 的源码注释 / CI 断言文案 / Release notes 原写「同时覆盖 Stop 和 Suspend 两个方向」，与代码实际（pause 不置位 `stopRequested`）不符，已逐处订正；`CS01579` → `CS1579`；「MemoryCache 显式实现非泛型 IEnumerable」的错误注释改为事实；tag 举例同步；补登记 S-2b 回滚在服务模式下不停 SCM 服务、以及 `LastStopWasGraceful` 与实际强杀不符两条边界。
+- **CI 断言计数**：0007 的 16 条 + 0008 的 2 条 + 0009 的 2 条 = 20 条。
+
+**为什么 CI 没抓住**：原 16 条断言全是 `grep` 文本匹配，且不执行产物；编译期 cast 到接口合法，F-2 断言也只查 Trim 字面量、不查变量定义顺序。本轮把「运行时类型安全」与「变量判断顺序」分别做成正/负双向断言，杜绝同类「CI 绿但运行失效」再次漏网。**两个修复的真机断网→恢复 / 卸载全流程尚未跑**，静态与真实组件级证据已闭环，见下方已知限制。
 
 **生命周期自适应验收（v3.1.0）**
 - 运行中注销并重新登录：`fastgithub.exe` / `dnscrypt-proxy.exe` 均已退出，`ProxyOverride` 无本工具追加条目、`hosts` 已还原；引擎日志出现 `正在主动关闭，因为父进程已退出` 或 `收到 用户注销/系统关机`。
@@ -376,6 +387,7 @@ icacls "cacert" /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F
 - 引擎启动瞬间即断网时，首轮探测只建基线 + 连续 2 次确认，最坏约 30s（2 个探测周期）才暂停 dnscrypt；语义上避免网络栈未就绪即判死刑。
 - `AppHostedService` 的父进程监控仍用同步 `Process.WaitForExit()`，不响应宿主取消；Host 关闭超时已从上游的 1s 放宽到 6s 以容纳 `StopBudgetMs`（默认 2500ms、上限 4000ms）。G-2 三种停法真机全过，故此项只在**服务模式不经 UI 直接停机**时可能暴露，属极端工况，不改动核心停机链。
 - 卸载脚本的服务模式兜底（R-1）：`sc stop fastgithub` 走 `WindowsServiceLifetime`，先取消 `stoppingToken`，hosts 还原可能被跳过；且 `[3b/7]` 的两步法提示要求「UI 点停止加速」，服务模式通常无 UI。仅在「服务模式 + hosts 有冲突行 + 强杀后卸载」三重叠加时触发。
+- S-2b 启动收尾回滚的两条边界：回滚只做 `ReleaseJob()` / `DisposeProcess()` 而不走 `StopCoreAsync`，服务模式下 `jobHandle==0`（`TryBindJobObject` 被跳过），SCM 服务与服务定义不会被停止/删除，状态却是 `Stopped`、看护不会回收；另外 `LastStopWasGraceful` 沿用旧值，与实际（Job 关闭触发的强杀兜底）不符。仅在「服务模式 + StartCoreAsync 期间宿主请求停机」这一窄窗口触发，不改动核心停机链。
 
 ---
 
@@ -390,10 +402,10 @@ FastGithub 原仓库含 LICENSE（MIT 系）。**复用前请核对 `creazyboyon
 仓库已配置 `.github/workflows/build.yml`：推送 `fix`（或 tag、或手动）即在 GitHub 托管的 `windows-latest` runner 上自动执行 `build-portable.cmd`，产出 `dist/FastGithub-Portable-win-x64.zip`。
 
 - ⚠️ **更正（此前表述有误）**：**只有打 `v*` tag 才会发布 Release**。推送 `fix` / 手动触发只会执行构建与断言，并把 zip 作为 **Artifact** 上传（保留 7 天），**不会**创建或更新 Release，也不存在 `ci-<运行号>` 这类标签。发布逻辑见 `build.yml` 的 `Publish Release (仅 tag 触发)` 步（条件 `startsWith(github.ref,'refs/tags/v')`）。
-- **打 `v*` tag**（如 `v3.1.2`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。v3.1.2 起 Release notes 写详细记录：版本变更 + 真机证据 + 已知未覆盖边界 + 卸载指引 + SHA256。
+- **打 `v*` tag**（如 `v3.1.4`）则发布对应版本号的 Release，并把 zip 的 SHA256 写进 Release notes 供校验。v3.1.2 起 Release notes 写详细记录：版本变更 + 真机证据 + 已知未覆盖边界 + 卸载指引 + SHA256。
 - 构建时自动把托盘右键"检测更新"跳转链接指向本仓库 `Rickeal-Boss/GitHubplus`：`build-portable.cmd` 的 `[2b]` 步**整文件覆盖** `FastGithub.UI/MainWindow.xaml.cs`（上游原版指向 `dotnetcore/FastGithub`），并非字符串 patch；并注入 UI 增强补丁（`[2c]` 步把 `src-patches/FastGithub.UI/` 下的文件**逐文件 copy** 进克隆源码，新增「加速」标签页与加速控制面板）；生命周期相关 5 个新文件由 `[2ah]` 单独拷入。
 - **上游供应链已 pin**：上游 `creazyboyone/FastGithub` 已固定到已审计的 commit `f5425ec6750463f64f6b01d15d8010e0b53f94c4`（2025-08-01）。构建脚本 `build-portable.cmd` 只按这个 SHA 精确拉取，并在拉取后校验 `git rev-parse HEAD` 与之相等，不等即失败。**要升级上游版本，必须显式修改 `build-portable.cmd` 顶部的 `UPSTREAM_COMMIT`**——CI 里也有一道断言，改动该行会被校验。原 `dotnetcore/FastGithub` 已删库、现 fork 不再维护，切勿回到「追最新代码」的做法。
-- **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录；并断言 `[2ah]` 生命周期补丁全部生效、`<Version>3.1.3</Version>`、构建脚本 `echo` 行无裸 `->`、仓库根目录无历史垃圾文件，任一不符即构建失败。v3.1.2 另加 4 条 `clean.cmd` 防回归断言（锚点 / SolveAsync / `where git` ×2 / `sc query WinDivert` ×2）；0007 再加 16 条生命周期与脚本断言（原 15 条 + S-2b 收尾复查 1 条），并把 R-3 的两条 N-1 断言改判真实逻辑字面量而非注释文案。
+- **构建期安全断言**：构建前校验 `build-portable.cmd` 是否 pin 了上述 commit；构建后校验 `src/FastGithub.HttpServer/Certs/CertService.cs` 不含 `GitConfigSslverify`、`dist` 下无 `*.key`、无预置 `cacert/` 目录；并断言 `[2ah]` 生命周期补丁全部生效、`<Version>3.1.4</Version>`、构建脚本 `echo` 行无裸 `->`、仓库根目录无历史垃圾文件，任一不符即构建失败。v3.1.2 另加 4 条 `clean.cmd` 防回归断言（锚点 / SolveAsync / `where git` ×2 / `sc query WinDivert` ×2）；0007 再加 16 条生命周期与脚本断言（原 15 条 + S-2b 收尾复查 1 条）、0008 再加 2 条运行时类型安全断言、0009 再加 2 条 ProxyOverride 清理顺序断言，并把 R-3 的两条 N-1 断言改判真实逻辑字面量而非注释文案。
 - **取构件 / Release**：仓库 **Actions** 页 → 对应运行 → **Artifacts**；或 **Releases** 页直接下载。
 - **手动触发**：Actions 页 → 选工作流 → **Run workflow**。
 - **环境**：runner 通过 `actions/setup-dotnet` 装好 .NET 10 SDK；CI 只构建、不加载 WinDivert 驱动（无需管理员）。
