@@ -1273,8 +1273,11 @@ jobs:
           - 文档订正：CS01579 → CS1579；MemoryCache「显式实现 IEnumerable」的错误注释改为事实；S-2b「覆盖 Stop 和 Suspend 两方向」逐处订正为仅 Stop；tag 举例同步；补登记 S-2b 回滚服务模式缺口与 LastStopWasGraceful 不符两条边界。
           - CI：共 20 条防回归断言（0007 的 16 条 + 0008 的 2 条运行时类型安全 + 0009 的 2 条 ProxyOverride 清理顺序）；产品版本号升到 3.1.4，引擎横幅与 UI 标题同源。
 
-          ## 真机证据（v3.1.3 及之前；v3.1.4 修复待补验）
-          - 以下证据均来自 v3.1.3 及更早版本。v3.1.4 的两项 P1 修复尚无真机日志，最小验收：断网→恢复不再出现「网络看护本轮异常，已跳过并继续下一轮」，恢复后新域名首请求无 1 分钟级慢；卸载后 ProxyOverride 中加速域名清零而用户条目完整保留。
+          ## 验收证据（v3.1.4 沙箱全量验收通过 + v3.1.3 及之前真机）
+          - v3.1.4 沙箱全量验收（2026-11-21，远程 cc6ccb8，全量回归无新缺陷）：强制重编译拒绝复用旧产物，四维全开（重编译 + 真实 dll IL + 真 PowerShell + 真实二进制）。完整项目 dotnet build -t:Rebuild 得 0 Error（2 个既有 nullable warning 非阻断）；P1-1 用刚编译的真实 dll 反射执行 ClearFailureCaches，注入 3 失败 + 2 正常记录，结果未抛异常、失败全清正常全留；P1-2 逐字抽取修复后 [3/7] 片段在真 PowerShell 7.7 mock 注册表端到端跑，修复版写入 1 次且用户 3 条完整保留，v3.1.3 缺陷版写入 0 次、加速域名残留（双向闭环）。
+          - v3.1.4 全量回归：状态机 6/6（Stop 方向孤儿 30/30、恢复链 20/20、1000 次抖动不变量成立）；端口实探双绑/退避/幽灵端口全过；配置 Normalize/Bind 37/37；clean.cmd 匹配边界 23/23；dnscrypt 真实二进制反复启停 10/10（每轮 SIGTERM 优雅退出 + 端口即时释放）；信号矩阵 TERM/INT 优雅、HUP/QUIT 非优雅，符合设计。
+          - **边界（非阻断）**：以上为沙箱证据（真组件真 IL 真二进制，注册表为 mock、断网与卸载为受控复现），不是主理人机器上的真机全流程。两项 P1 的实际断网→恢复与实际卸载全流程仍需按 README 判据复跑：断网→恢复不再出现「网络看护本轮异常，已跳过并继续下一轮」，恢复后新域名首请求无 1 分钟级慢；卸载后 ProxyOverride 中加速域名清零而用户条目完整保留。
+          - 以下 G-2 / 卸载日志 / 句柄稳定性等证据均来自 v3.1.3 及更早版本。
           - G-2 复验（已销账，2026-11-21 01:12/01:24/01:25）：关控制台窗口走 CTRL_CLOSE 钩子 22ms 完整链；Ctrl+C 走 ConsoleLifetime→host.StopAsync() 只留已优雅退出（5ms）；注销无停机日志但三个 exe 全无孤儿。-Check 只读核验 ProxyOverride 精确回到 20 条用户条目、FastGithubProxyOverrideOwned 已删、5533 无监听。
           - 卸载日志（N-1 修复后 clean.cmd）：[0/7] 只结束 1 锚点 + UI、无 /F 强杀 → 8s 窗口引擎自行优雅停机；[3b/7] 无未消费 HostsPatchedSegments；[1/7] 移除 2 CA、[4/7] 删 cacert（含私钥）、[7/7] 删 WinDivert 服务。
           - 反复启停 20 轮句柄 1040→948（斜率 -4.84/轮，无泄漏）；断网→暂停 4.5s、恢复→可用约 5s；延迟 direct P50 0.006~0.012s / accel P50 0.019~0.021s，加速态 P95 长尾从 0.141~0.146s 削到 0.028~0.042s。
@@ -1284,7 +1287,7 @@ jobs:
           - S-4 注销不经 UI 的优雅停机：交互式会话收不到 CTRL_LOGOFF，进程随即被终止；真机确认无孤儿但不走还原链。
           - R-1 服务模式 + hosts 残留 + 强杀后卸载的三重叠加；AppHostedService 同步 WaitForExit() 的服务模式停机竞态（G-2 三种停法真机全过）。
           - H-3 packages.lock.json（需 dotnet restore --locked-mode 生成）、H-4 ReferenceAssemblies.net45（需 CI runner 确认 targeting pack）、F-4 Set-Content BOM 不一致（信息级，对 MSBuild/Roslyn 无害）。
-          - v3.1.4 两项 P1 修复尚待真机验收：ClearFailureCaches 与 clean.cmd ProxyOverride 已有真实 dll 反射 + 真 PowerShell 端到端证据，但未在本机跑断网→恢复与卸载全流程。
+          - v3.1.4 两项 P1 已完成沙箱全量验收（真实 dll IL + 真 PowerShell 双向对照 + 真二进制，详见上方验收证据），但沙箱证据不等于真机全流程：实际断网→恢复与卸载仍需主理人按 README 判据复跑一次。
           - S-2b 启动收尾回滚的两条边界：只 ReleaseJob/DisposeProcess 不走 StopCoreAsync，服务模式下 SCM 服务与定义不停/不删而状态为 Stopped；LastStopWasGraceful 沿用旧值，与实际强杀兜底不符。仅在「服务模式 + StartCoreAsync 期间宿主请求停机」窄窗口触发。
 
           ## 使用与卸载
